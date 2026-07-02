@@ -1,5 +1,7 @@
 # mudra-viewer
 
+[![Deploy to GitHub Pages](https://github.com/ttktjmt/mudra-viewer/actions/workflows/deploy.yml/badge.svg)](https://github.com/ttktjmt/mudra-viewer/actions/workflows/deploy.yml)
+
 Realtime EMG Signal Viewer for Mudra Link
 
 A static web app that connects to a Mudra Link directly from the browser over
