@@ -1,0 +1,19 @@
+{
+  "name": "mudra-viewer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "mudraka": "0.2.1"
+  },
+  "devDependencies": {
+    "@types/web-bluetooth": "^0.0.20",
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0"
+  }
+}

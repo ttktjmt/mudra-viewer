@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mudra Link EMG Viewer</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; font: 14px/1.5 system-ui, sans-serif;
+        background: #0d1117; color: #e6edf3;
+        display: flex; flex-direction: column; height: 100vh;
+      }
+      header {
+        display: flex; align-items: center; gap: 16px;
+        padding: 12px 20px; border-bottom: 1px solid #21262d;
+      }
+      h1 { font-size: 16px; margin: 0; font-weight: 600; }
+      #connect {
+        padding: 8px 18px; border: 0; border-radius: 6px; cursor: pointer;
+        background: #238636; color: #fff; font-size: 14px; font-weight: 600;
+      }
+      #connect:disabled { background: #30363d; color: #8b949e; cursor: not-allowed; }
+      #connect.connected { background: #da3633; }
+      #status { color: #8b949e; }
+      #rate { margin-left: auto; color: #8b949e; font-variant-numeric: tabular-nums; }
+      #banner {
+        display: none; padding: 10px 20px; background: #3d1e00;
+        color: #ffcc80; border-bottom: 1px solid #5a2d00;
+      }
+      #plots { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+      .lane { flex: 1; position: relative; border-bottom: 1px solid #161b22; min-height: 0; }
+      .lane label {
+        position: absolute; top: 6px; left: 10px; z-index: 1;
+        color: #8b949e; font-size: 12px; pointer-events: none;
+      }
+      canvas { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Mudra Link EMG Viewer</h1>
+      <button id="connect">Connect</button>
+      <span id="status">Not connected</span>
+      <span id="rate"></span>
+    </header>
+    <div id="banner"></div>
+    <div id="plots"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
