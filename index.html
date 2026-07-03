@@ -18,14 +18,14 @@
         padding: 12px 20px; background: #faf9f5; border-bottom: 1px solid #e8e6dd;
       }
       h1 { font-size: 16px; margin: 0; font-weight: 600; }
-      #connect, #play {
+      #connect, #play, #record {
         padding: 8px 18px; border: 0; border-radius: 6px; cursor: pointer;
         background: #c96442; color: #fff; font-size: 14px; font-weight: 600;
       }
-      #play { background: #6b6858; }
-      #connect:disabled, #play:disabled { background: #e0ddd0; color: #a5a294; cursor: not-allowed; }
+      #play, #record { background: #6b6858; }
+      #connect:disabled, #play:disabled, #record:disabled { background: #e0ddd0; color: #a5a294; cursor: not-allowed; }
       #connect.connected { background: #b5482f; }
-      #play.connected { background: #4a4840; }
+      #play.connected, #record.connected { background: #4a4840; }
       #play-wrap { position: relative; }
       #play-menu {
         position: absolute; top: calc(100% + 6px); right: 0; z-index: 10; min-width: 100%;
@@ -68,6 +68,7 @@
         <button id="play">Play ▾</button>
         <div id="play-menu" hidden></div>
       </span>
+      <button id="record" disabled>● Record</button>
       <button id="connect">Connect</button>
     </header>
     <div id="banner"></div>

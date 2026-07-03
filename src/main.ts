@@ -22,6 +22,7 @@ const AMP_HALF = 32768 * 1.1;
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const connectBtn = $<HTMLButtonElement>("connect");
 const playBtn = $<HTMLButtonElement>("play");
+const recordBtn = $<HTMLButtonElement>("record");
 const playMenu = $("play-menu");
 
 // Fixtures under public/fixtures/ are detected at build time — drop a new
@@ -153,7 +154,9 @@ async function setupEngine() {
 
 function onNotification(e: Event) {
   const dv = (e.target as BluetoothRemoteGATTCharacteristic).value!;
-  feedBytes(new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength), performance.now() / 1000);
+  const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+  if (recording) recordFrame(bytes);
+  feedBytes(bytes, performance.now() / 1000);
 }
 
 function cleanup() {
@@ -171,6 +174,10 @@ function cleanup() {
   playBtn.textContent = "Play ▾";
   playBtn.classList.remove("connected");
   playBtn.disabled = false;
+  recording = false;
+  recordBtn.textContent = "● Record";
+  recordBtn.classList.remove("connected");
+  recordBtn.disabled = true; // re-enabled only once a live stream is up
 }
 
 function onDisconnected() {
@@ -212,6 +219,7 @@ async function connect() {
     connectBtn.textContent = "Disconnect";
     connectBtn.classList.add("connected");
     connectBtn.disabled = false;
+    recordBtn.disabled = false;
   } catch (err) {
     setStatus(`Connection failed: ${(err as Error).message}`, "error");
     device?.gatt?.disconnect();
@@ -312,3 +320,85 @@ playMenu.addEventListener("click", (e) => {
 });
 // Click anywhere else closes the menu.
 document.addEventListener("click", () => (playMenu.hidden = true));
+
+// --- Guided recording (device must be streaming) ---
+// Scripts the user through a fixed gesture protocol while stashing a copy of every
+// live SNC frame, then downloads capture.bin + index.json in the same shape the
+// playback loader above consumes. Pure client-side download — works identically on
+// GitHub Pages and localhost. Drop both files into public/fixtures/<name>/ to add a sample.
+const PROTOCOL = [
+  { label: "Grasp", reps: 3 },
+  { label: "Open", reps: 3 },
+  { label: "Pinch", reps: 3 },
+  { label: "Pronation", reps: 3 }, // 回内
+  { label: "Supination", reps: 3 }, // 回外
+];
+const STEP_SEC = 5;
+
+let recording = false;
+let recStart = 0;
+let recOffset = 0;
+const recChunks: Uint8Array[] = [];
+const recFrames: Frame[] = [];
+const recMarkers: { label: string; reps: number; t_mono_ns: number }[] = [];
+const nowNs = () => Math.round((performance.now() - recStart) * 1e6);
+
+function recordFrame(bytes: Uint8Array) {
+  const copy = bytes.slice(); // BLE reuses the DataView buffer — must copy before it changes
+  recFrames.push({ offset: recOffset, len: copy.length, uuid: uuid(CHAR_SNC), dir: "rx", t_mono_ns: nowNs() });
+  recChunks.push(copy);
+  recOffset += copy.length;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function record() {
+  recChunks.length = recFrames.length = recMarkers.length = 0;
+  recOffset = 0;
+  recStart = performance.now();
+  recording = true;
+  recordBtn.textContent = "■ Stop";
+  recordBtn.classList.add("connected");
+  connectBtn.disabled = playBtn.disabled = true;
+
+  for (const step of PROTOCOL) {
+    if (!recording) break;
+    recMarkers.push({ label: step.label, reps: step.reps, t_mono_ns: nowNs() });
+    for (let s = STEP_SEC; s > 0 && recording; s--) {
+      bannerEl.style.display = "block";
+      bannerEl.textContent = `Recording — ${step.label} × ${step.reps}   ·   ${s}s`;
+      await sleep(1000);
+    }
+  }
+
+  const completed = recording; // false if the user hit Stop early → discard
+  recording = false;
+  bannerEl.style.display = "none";
+  recordBtn.textContent = "● Record";
+  recordBtn.classList.remove("connected");
+  connectBtn.disabled = playBtn.disabled = false;
+
+  if (completed && recFrames.length) downloadRecording();
+  else setStatus("Streaming", "ok");
+}
+
+function downloadRecording() {
+  const bin = new Uint8Array(recOffset);
+  let o = 0;
+  for (const c of recChunks) { bin.set(c, o); o += c.length; }
+  const index = { frames: recFrames.map((f, i) => ({ i, ...f })), markers: recMarkers };
+  save(new Blob([bin]), "capture.bin");
+  save(new Blob([JSON.stringify(index)], { type: "application/json" }), "index.json");
+  setStatus("Saved capture.bin + index.json → drop into public/fixtures/<name>/", "ok");
+}
+
+function save(blob: Blob, filename: string) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// Recording → Stop (discards). Idle → start the guided protocol.
+recordBtn.addEventListener("click", () => (recording ? (recording = false) : record()));
