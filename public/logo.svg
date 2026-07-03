@@ -1,0 +1,10 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mudra Viewer">
+  <rect width="64" height="64" rx="14" fill="#c96442"/>
+  <path
+    d="M8 32 H18 L22 20 L28 44 L34 24 L40 40 L44 32 H56"
+    fill="none"
+    stroke="#faf9f5"
+    stroke-width="3.5"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+</svg>
