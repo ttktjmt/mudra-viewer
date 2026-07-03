@@ -6,7 +6,7 @@ Realtime EMG Signal Viewer for Mudra Link
 
 A static web app that connects to a Mudra Link directly from the browser over
 Web Bluetooth and shows its 3-channel sEMG waveforms in real time (~834 Hz).
-Decoding is done by [`mudraka`](https://www.npmjs.com/package/mudraka) (WASM);
+Decoding is done by [`mudraka`](https://github.com/ttktjmt/mudraka) (WASM);
 the BLE connection is handled in-app.
 
 ## Browser support
