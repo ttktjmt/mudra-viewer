@@ -6,6 +6,7 @@ const SERVICE = 0xfff0; // parent service (assumed; confirm on real device)
 const CHAR_SNC = 0x0000fff4; // raw sEMG notifications
 const CHAR_CMD = 0x0000fff1; // COMMAND (host writes enable here)
 const ENABLE_SNC = Uint8Array.of(0x06, 0x00, 0x01); // start SNC stream
+const DISABLE_SNC = Uint8Array.of(0x06, 0x00, 0x00); // stop SNC stream (return device to idle)
 const uuid = (n: number) =>
   `0000${(n & 0xffff).toString(16).padStart(4, "0")}-0000-1000-8000-00805f9b34fb`;
 
@@ -108,6 +109,8 @@ let stream: Stream | null = null;
 let dstPtr = 0;
 let cursor = 0;
 let device: BluetoothDevice | null = null;
+let sncChar: BluetoothRemoteGATTCharacteristic | null = null;
+let cmdChar: BluetoothRemoteGATTCharacteristic | null = null;
 
 const MAX_PULL = 256;
 
@@ -143,6 +146,9 @@ function onNotification(e: Event) {
 }
 
 function cleanup() {
+  sncChar?.removeEventListener("characteristicvaluechanged", onNotification);
+  sncChar = null;
+  cmdChar = null;
   if (stream) { stream.delete(); stream = null; }
   if (M && dstPtr) { M._free(dstPtr); dstPtr = 0; }
   cursor = 0;
@@ -182,14 +188,14 @@ async function connect() {
     device.addEventListener("gattserverdisconnected", onDisconnected);
     const server = await device.gatt!.connect();
     const service = await server.getPrimaryService(uuid(SERVICE));
-    const snc = await service.getCharacteristic(uuid(CHAR_SNC));
-    const cmd = await service.getCharacteristic(uuid(CHAR_CMD));
+    sncChar = await service.getCharacteristic(uuid(CHAR_SNC));
+    cmdChar = await service.getCharacteristic(uuid(CHAR_CMD));
 
     await setupEngine();
 
-    snc.addEventListener("characteristicvaluechanged", onNotification);
-    await snc.startNotifications();
-    await cmd.writeValue(ENABLE_SNC); // streams are off by default
+    sncChar.addEventListener("characteristicvaluechanged", onNotification);
+    await sncChar.startNotifications();
+    await cmdChar.writeValue(ENABLE_SNC); // streams are off by default
 
     setStatus("Streaming", "ok");
     connectBtn.textContent = "Disconnect";
@@ -202,7 +208,15 @@ async function connect() {
   }
 }
 
-function disconnect() {
+async function disconnect() {
+  connectBtn.disabled = true;
+  // Return the device to idle before dropping GATT. Skipping this leaves the
+  // firmware streaming, and macOS/CoreBluetooth then refuses the next connect
+  // until the user "Forget This Device". Best-effort: the link may already be gone.
+  try {
+    await cmdChar?.writeValue(DISABLE_SNC);
+    await sncChar?.stopNotifications();
+  } catch { /* device already disconnected */ }
   device?.gatt?.disconnect(); // fires gattserverdisconnected -> cleanup
 }
 
