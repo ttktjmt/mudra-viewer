@@ -26,6 +26,19 @@
       #connect:disabled, #play:disabled { background: #e0ddd0; color: #a5a294; cursor: not-allowed; }
       #connect.connected { background: #b5482f; }
       #play.connected { background: #4a4840; }
+      #play-wrap { position: relative; }
+      #play-menu {
+        position: absolute; top: calc(100% + 6px); right: 0; z-index: 10; min-width: 100%;
+        background: #faf9f5; border: 1px solid #e8e6dd; border-radius: 8px;
+        box-shadow: 0 6px 20px rgba(61, 61, 58, 0.15); overflow: hidden; padding: 4px;
+      }
+      #play-menu[hidden] { display: none; }
+      #play-menu button {
+        display: block; width: 100%; text-align: left; white-space: nowrap;
+        padding: 8px 14px; border: 0; border-radius: 5px; background: none;
+        color: #3d3d3a; font-size: 14px; font-weight: 500; cursor: pointer;
+      }
+      #play-menu button:hover { background: #efece1; }
       #status {
         width: 11px; height: 11px; border-radius: 50%; margin-left: auto;
         background: currentColor; color: #a5a294; box-shadow: 0 0 6px currentColor;
@@ -49,9 +62,12 @@
   </head>
   <body>
     <header>
-      <h1>Mudra Link EMG Viewer</h1>
+      <h1>Mudra Viewer</h1>
       <span id="status" title="Not connected"></span>
-      <button id="play">Play sample</button>
+      <span id="play-wrap">
+        <button id="play">Play ▾</button>
+        <div id="play-menu" hidden></div>
+      </span>
       <button id="connect">Connect</button>
     </header>
     <div id="banner"></div>

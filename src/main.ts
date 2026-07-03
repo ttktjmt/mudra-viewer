@@ -22,6 +22,17 @@ const AMP_HALF = 32768 * 1.1;
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const connectBtn = $<HTMLButtonElement>("connect");
 const playBtn = $<HTMLButtonElement>("play");
+const playMenu = $("play-menu");
+
+// Fixtures under public/fixtures/ are detected at build time — drop a new
+// recording folder (with capture.bin + index.json) and it shows up in the dropdown.
+const FIXTURES = Object.keys(import.meta.glob("/public/fixtures/*/index.json"))
+  .map((p) => p.split("/")[3])
+  .sort();
+
+playMenu.innerHTML = FIXTURES.length
+  ? FIXTURES.map((f) => `<button data-fixture="${f}">${f.replace(/_/g, " ")}</button>`).join("")
+  : "<button disabled>No samples</button>";
 const statusEl = $("status");
 const bannerEl = $("banner");
 const plotsEl = $("plots");
@@ -157,7 +168,7 @@ function cleanup() {
   connectBtn.textContent = "Connect";
   connectBtn.classList.remove("connected");
   connectBtn.disabled = false;
-  playBtn.textContent = "Play sample";
+  playBtn.textContent = "Play ▾";
   playBtn.classList.remove("connected");
   playBtn.disabled = false;
 }
@@ -227,13 +238,12 @@ connectBtn.addEventListener("click", () =>
 // --- Recorded-session playback (no device needed) ---
 // Replays a captured session's raw SNC frames through the same decode path as the
 // live BLE feed, at the frames' recorded cadence. Loops until stopped.
-const SAMPLE = "16bit_rest";
 let playing = false;
 let playRaf = 0;
 
 type Frame = { offset: number; len: number; uuid: string; dir: string; t_mono_ns: number };
 
-async function play() {
+async function play(name: string) {
   playBtn.disabled = true;
   connectBtn.disabled = true;
   setStatus("Loading sample…", "busy");
@@ -241,7 +251,7 @@ async function play() {
   let bin: Uint8Array;
   let frames: Frame[];
   try {
-    const dir = `${import.meta.env.BASE_URL}fixtures/${SAMPLE}`;
+    const dir = `${import.meta.env.BASE_URL}fixtures/${name}`;
     const [buf, index] = await Promise.all([
       fetch(`${dir}/capture.bin`).then((r) => r.arrayBuffer()),
       fetch(`${dir}/index.json`).then((r) => r.json()),
@@ -258,7 +268,7 @@ async function play() {
 
   await setupEngine();
   playing = true;
-  playBtn.textContent = "Stop";
+  playBtn.textContent = "■ Stop";
   playBtn.classList.add("connected");
   playBtn.disabled = false;
   setStatus("Playing sample", "ok");
@@ -290,4 +300,15 @@ function stopPlay() {
   cleanup();
 }
 
-playBtn.addEventListener("click", () => (playing ? stopPlay() : play()));
+// Playing → button stops. Idle → button toggles the fixture menu.
+playBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (playing) { stopPlay(); return; }
+  playMenu.hidden = !playMenu.hidden;
+});
+playMenu.addEventListener("click", (e) => {
+  const f = (e.target as HTMLElement).dataset.fixture;
+  if (f) { playMenu.hidden = true; play(f); }
+});
+// Click anywhere else closes the menu.
+document.addEventListener("click", () => (playMenu.hidden = true));
