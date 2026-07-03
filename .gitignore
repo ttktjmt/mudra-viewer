@@ -3,3 +3,4 @@ dist
 .agents
 .claude
 skills-lock.json
+tmp

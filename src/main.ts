@@ -56,6 +56,9 @@ if (!navigator.bluetooth) {
 // --- Display ring buffers (one Float32Array per channel, shared write cursor) ---
 const rings = Array.from({ length: CH }, () => new Float32Array(WINDOW));
 let writeIdx = 0; // next write position; total count is unbounded but we only keep WINDOW
+// Decoded samples land here; the free-running display clock (see advanceRing) drains
+// them at RATE. Whatever source is active (live BLE / recorded playback) just fills it.
+const sampleQueue: number[][] = [];
 const canvases: HTMLCanvasElement[] = [];
 for (let c = 0; c < CH; c++) {
   const lane = document.createElement("div");
@@ -69,13 +72,25 @@ for (let c = 0; c < CH; c++) {
   canvases.push(canvas);
 }
 
-function pushSample(values: number[]) {
-  for (let c = 0; c < CH; c++) rings[c][writeIdx] = values[c];
-  writeIdx = (writeIdx + 1) % WINDOW;
+// Free-running display clock: advance the ring at RATE, draining queued samples
+// and writing zeros when the queue is empty. So the trace always scrolls — idle
+// shows a flat line, a finished recording scrolls out instead of snapping to zero.
+let lastAdvance = 0;
+function advanceRing(now: number) {
+  if (!lastAdvance) lastAdvance = now;
+  let n = Math.floor(((now - lastAdvance) / 1000) * RATE);
+  if (n > WINDOW) n = WINDOW; // don't over-catch-up after a tab pause
+  for (let k = 0; k < n; k++) {
+    const s = sampleQueue.shift();
+    for (let c = 0; c < CH; c++) rings[c][writeIdx] = s ? s[c] : 0;
+    writeIdx = (writeIdx + 1) % WINDOW;
+  }
+  lastAdvance += (n / RATE) * 1000; // carry the sub-sample remainder
 }
 
 // --- Rendering (rAF, decoupled from BLE feed) ---
 function draw() {
+  advanceRing(performance.now());
   for (let c = 0; c < CH; c++) {
     const canvas = canvases[c];
     const dpr = window.devicePixelRatio || 1;
@@ -134,7 +149,7 @@ function feedBytes(bytes: Uint8Array, tSec: number) {
   for (;;) {
     const r = stream!.pullInto(cursor, dstPtr, MAX_PULL);
     for (let i = 0; i < r.written; i++) {
-      pushSample([
+      sampleQueue.push([
         M!.HEAP32[base + 0 * MAX_PULL + i],
         M!.HEAP32[base + 1 * MAX_PULL + i],
         M!.HEAP32[base + 2 * MAX_PULL + i],
@@ -143,6 +158,8 @@ function feedBytes(bytes: Uint8Array, tSec: number) {
     cursor = r.next_cursor;
     if (r.written < MAX_PULL) break;
   }
+  // Bound latency: a burst can't back up more than one screen behind the clock.
+  if (sampleQueue.length > WINDOW) sampleQueue.splice(0, sampleQueue.length - WINDOW);
 }
 
 async function setupEngine() {
@@ -166,8 +183,7 @@ function cleanup() {
   if (stream) { stream.delete(); stream = null; }
   if (M && dstPtr) { M._free(dstPtr); dstPtr = 0; }
   cursor = 0;
-  writeIdx = 0;
-  rings.forEach((r) => r.fill(0));
+  sampleQueue.length = 0; // stop feeding; the clock scrolls zeros in on its own
   connectBtn.textContent = "Connect";
   connectBtn.classList.remove("connected");
   connectBtn.disabled = false;
@@ -247,7 +263,7 @@ connectBtn.addEventListener("click", () =>
 
 // --- Recorded-session playback (no device needed) ---
 // Replays a captured session's raw SNC frames through the same decode path as the
-// live BLE feed, at the frames' recorded cadence. Loops until stopped.
+// live BLE feed, at the frames' recorded cadence. Plays through once, then stops.
 let playing = false;
 let playRaf = 0;
 
@@ -283,24 +299,24 @@ async function play(name: string) {
   playBtn.disabled = false;
   setStatus("Playing sample", "ok");
 
-  // ponytail: looping re-feeds from frame 0, so ~one glitch per 34 s loop as the
-  // decoder's SNC sequence jumps back. Fine for a demo; rebuild the stream per loop if it matters.
-  const runOnce = () => {
-    const t0 = frames[0].t_mono_ns;
-    const start = performance.now();
-    let i = 0;
-    const tick = () => {
-      if (!playing) return;
-      const elapsed = performance.now() - start;
-      while (i < frames.length && (frames[i].t_mono_ns - t0) / 1e6 <= elapsed) {
-        const f = frames[i++];
-        feedBytes(bin.subarray(f.offset, f.offset + f.len), performance.now() / 1000);
-      }
-      playRaf = requestAnimationFrame(i < frames.length ? tick : runOnce);
-    };
-    playRaf = requestAnimationFrame(tick);
+  const t0 = frames[0].t_mono_ns;
+  const start = performance.now();
+  let i = 0;
+  const tick = () => {
+    if (!playing) return;
+    const elapsed = performance.now() - start;
+    while (i < frames.length && (frames[i].t_mono_ns - t0) / 1e6 <= elapsed) {
+      const f = frames[i++];
+      feedBytes(bin.subarray(f.offset, f.offset + f.len), performance.now() / 1000);
+    }
+    if (i < frames.length) playRaf = requestAnimationFrame(tick);
+    else { // played through once — stop feeding; the clock scrolls the tail out
+      playing = false;
+      cleanup();
+      setStatus("Sample finished", "idle");
+    }
   };
-  runOnce();
+  playRaf = requestAnimationFrame(tick);
 }
 
 function stopPlay() {
