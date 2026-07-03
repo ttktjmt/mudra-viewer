@@ -13,7 +13,9 @@ const CH = 3;
 const RATE = 834;
 const LABELS = ["ulnar", "median", "radial"];
 const WINDOW = Math.ceil(3 * RATE); // ~3 s of samples per channel
-const COLORS = ["#58a6ff", "#3fb950", "#f778ba"];
+const COLORS = ["#2563eb", "#0f9d58", "#c026d3"];
+// Mudra Link SNC is fixed 16-bit signed (docs); pin the amplitude to the full range.
+const AMP_HALF = 32768 * 1.1;
 
 // --- DOM ---
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -55,7 +57,6 @@ function pushSample(values: number[]) {
 }
 
 // --- Rendering (rAF, decoupled from BLE feed) ---
-const peaks = new Float32Array(CH).fill(1);
 function draw() {
   for (let c = 0; c < CH; c++) {
     const canvas = canvases[c];
@@ -69,18 +70,11 @@ function draw() {
     const ctx = canvas.getContext("2d")!;
     ctx.clearRect(0, 0, w, h);
 
-    // auto-scale: track decaying peak so bursts stay on-screen, quiet doesn't flatline
     const ring = rings[c];
-    let maxAbs = 0;
-    for (let i = 0; i < WINDOW; i++) {
-      const a = Math.abs(ring[i]);
-      if (a > maxAbs) maxAbs = a;
-    }
-    peaks[c] = Math.max(maxAbs, peaks[c] * 0.95);
-    const half = (peaks[c] * 1.1) || 1;
+    const half = AMP_HALF; // fixed full-scale, no auto-adjust
 
     // zero line
-    ctx.strokeStyle = "#21262d";
+    ctx.strokeStyle = "#e0ddd0";
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, h / 2);
@@ -146,7 +140,6 @@ function cleanup() {
   cursor = 0;
   writeIdx = 0;
   rings.forEach((r) => r.fill(0));
-  peaks.fill(1);
   connectBtn.textContent = "Connect";
   connectBtn.classList.remove("connected");
   connectBtn.disabled = false;
