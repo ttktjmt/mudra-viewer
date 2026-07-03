@@ -17,14 +17,22 @@
         padding: 12px 20px; background: #faf9f5; border-bottom: 1px solid #e8e6dd;
       }
       h1 { font-size: 16px; margin: 0; font-weight: 600; }
-      #connect {
+      #connect, #play {
         padding: 8px 18px; border: 0; border-radius: 6px; cursor: pointer;
         background: #c96442; color: #fff; font-size: 14px; font-weight: 600;
       }
-      #connect:disabled { background: #e0ddd0; color: #a5a294; cursor: not-allowed; }
+      #play { background: #6b6858; }
+      #connect:disabled, #play:disabled { background: #e0ddd0; color: #a5a294; cursor: not-allowed; }
       #connect.connected { background: #b5482f; }
-      #status { color: #6b6858; }
-      #rate { margin-left: auto; color: #6b6858; font-variant-numeric: tabular-nums; }
+      #play.connected { background: #4a4840; }
+      #status {
+        width: 11px; height: 11px; border-radius: 50%; margin-left: auto;
+        background: currentColor; color: #a5a294; box-shadow: 0 0 6px currentColor;
+        cursor: default; flex: none;
+      }
+      #status.ok { color: #0f9d58; }
+      #status.error { color: #d92d20; }
+      #status.busy { color: #d99a2b; }
       #banner {
         display: none; padding: 10px 20px; background: #fbf0d9;
         color: #8a6d3b; border-bottom: 1px solid #ecdcb3;
@@ -41,9 +49,9 @@
   <body>
     <header>
       <h1>Mudra Link EMG Viewer</h1>
+      <span id="status" title="Not connected"></span>
+      <button id="play">Play sample</button>
       <button id="connect">Connect</button>
-      <span id="status">Not connected</span>
-      <span id="rate"></span>
     </header>
     <div id="banner"></div>
     <div id="plots"></div>

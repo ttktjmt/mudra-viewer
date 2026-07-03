@@ -20,12 +20,17 @@ const AMP_HALF = 32768 * 1.1;
 // --- DOM ---
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const connectBtn = $<HTMLButtonElement>("connect");
+const playBtn = $<HTMLButtonElement>("play");
 const statusEl = $("status");
-const rateEl = $("rate");
 const bannerEl = $("banner");
 const plotsEl = $("plots");
 
-const setStatus = (s: string) => (statusEl.textContent = s);
+// Status is a color-coded dot; the message lives in the tooltip (hover to read).
+type StatusKind = "idle" | "busy" | "ok" | "error";
+const setStatus = (text: string, kind: StatusKind = "idle") => {
+  statusEl.className = kind === "idle" ? "" : kind;
+  statusEl.title = text;
+};
 
 // --- Compatibility gate ---
 if (!navigator.bluetooth) {
@@ -106,10 +111,10 @@ let device: BluetoothDevice | null = null;
 
 const MAX_PULL = 256;
 
-function onNotification(e: Event) {
-  const dv = (e.target as BluetoothRemoteGATTCharacteristic).value!;
-  const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
-  stream!.feed(bytes, performance.now() / 1000);
+// Shared decode path: raw SNC frame bytes in, decoded samples pushed to display.
+// Both the live BLE feed and the recorded-session playback go through here.
+function feedBytes(bytes: Uint8Array, tSec: number) {
+  stream!.feed(bytes, tSec);
   const base = dstPtr >> 2;
   for (;;) {
     const r = stream!.pullInto(cursor, dstPtr, MAX_PULL);
@@ -125,16 +130,19 @@ function onNotification(e: Event) {
   }
 }
 
-let rateTimer = 0;
-function startRateReadout() {
-  rateTimer = window.setInterval(() => {
-    if (stream) rateEl.textContent = `${stream.estimatedRateHz().toFixed(0)} Hz`;
-  }, 500);
+async function setupEngine() {
+  if (!M) M = await createMudraka({ locateFile: () => wasmUrl });
+  stream = new M.Stream(M.makeConfig(CH, RATE, 4));
+  dstPtr = M._malloc(CH * MAX_PULL * 4);
+  cursor = 0;
+}
+
+function onNotification(e: Event) {
+  const dv = (e.target as BluetoothRemoteGATTCharacteristic).value!;
+  feedBytes(new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength), performance.now() / 1000);
 }
 
 function cleanup() {
-  clearInterval(rateTimer);
-  rateEl.textContent = "";
   if (stream) { stream.delete(); stream = null; }
   if (M && dstPtr) { M._free(dstPtr); dstPtr = 0; }
   cursor = 0;
@@ -143,51 +151,52 @@ function cleanup() {
   connectBtn.textContent = "Connect";
   connectBtn.classList.remove("connected");
   connectBtn.disabled = false;
+  playBtn.textContent = "Play sample";
+  playBtn.classList.remove("connected");
+  playBtn.disabled = false;
 }
 
 function onDisconnected() {
-  setStatus("Device disconnected");
+  setStatus("Device disconnected", "idle");
   cleanup();
 }
 
 async function connect() {
   connectBtn.disabled = true;
-  setStatus("Select a device…");
+  playBtn.disabled = true;
+  setStatus("Select a device…", "busy");
   try {
     device = await navigator.bluetooth.requestDevice({
       filters: [{ namePrefix: "Mudra" }, { namePrefix: "mudra" }],
       optionalServices: [SERVICE],
     });
   } catch {
-    setStatus("Connection cancelled");
+    setStatus("Connection cancelled", "idle");
     connectBtn.disabled = false;
+    playBtn.disabled = false;
     return;
   }
 
   try {
-    setStatus("Connecting…");
+    setStatus("Connecting…", "busy");
     device.addEventListener("gattserverdisconnected", onDisconnected);
     const server = await device.gatt!.connect();
     const service = await server.getPrimaryService(uuid(SERVICE));
     const snc = await service.getCharacteristic(uuid(CHAR_SNC));
     const cmd = await service.getCharacteristic(uuid(CHAR_CMD));
 
-    if (!M) M = await createMudraka({ locateFile: () => wasmUrl });
-    stream = new M.Stream(M.makeConfig(CH, RATE, 4));
-    dstPtr = M._malloc(CH * MAX_PULL * 4);
-    cursor = 0;
+    await setupEngine();
 
     snc.addEventListener("characteristicvaluechanged", onNotification);
     await snc.startNotifications();
     await cmd.writeValue(ENABLE_SNC); // streams are off by default
 
-    setStatus("Streaming");
-    startRateReadout();
+    setStatus("Streaming", "ok");
     connectBtn.textContent = "Disconnect";
     connectBtn.classList.add("connected");
     connectBtn.disabled = false;
   } catch (err) {
-    setStatus(`Connection failed: ${(err as Error).message}`);
+    setStatus(`Connection failed: ${(err as Error).message}`, "error");
     device?.gatt?.disconnect();
     cleanup();
   }
@@ -200,3 +209,71 @@ function disconnect() {
 connectBtn.addEventListener("click", () =>
   connectBtn.classList.contains("connected") ? disconnect() : connect(),
 );
+
+// --- Recorded-session playback (no device needed) ---
+// Replays a captured session's raw SNC frames through the same decode path as the
+// live BLE feed, at the frames' recorded cadence. Loops until stopped.
+const SAMPLE = "16bit_rest";
+let playing = false;
+let playRaf = 0;
+
+type Frame = { offset: number; len: number; uuid: string; dir: string; t_mono_ns: number };
+
+async function play() {
+  playBtn.disabled = true;
+  connectBtn.disabled = true;
+  setStatus("Loading sample…", "busy");
+
+  let bin: Uint8Array;
+  let frames: Frame[];
+  try {
+    const dir = `${import.meta.env.BASE_URL}fixtures/${SAMPLE}`;
+    const [buf, index] = await Promise.all([
+      fetch(`${dir}/capture.bin`).then((r) => r.arrayBuffer()),
+      fetch(`${dir}/index.json`).then((r) => r.json()),
+    ]);
+    bin = new Uint8Array(buf);
+    const sncUuid = uuid(CHAR_SNC);
+    frames = (index.frames as Frame[]).filter((f) => f.uuid === sncUuid && f.dir === "rx");
+  } catch (err) {
+    setStatus(`Failed to load sample: ${(err as Error).message}`, "error");
+    connectBtn.disabled = false;
+    playBtn.disabled = false;
+    return;
+  }
+
+  await setupEngine();
+  playing = true;
+  playBtn.textContent = "Stop";
+  playBtn.classList.add("connected");
+  playBtn.disabled = false;
+  setStatus("Playing sample", "ok");
+
+  // ponytail: looping re-feeds from frame 0, so ~one glitch per 34 s loop as the
+  // decoder's SNC sequence jumps back. Fine for a demo; rebuild the stream per loop if it matters.
+  const runOnce = () => {
+    const t0 = frames[0].t_mono_ns;
+    const start = performance.now();
+    let i = 0;
+    const tick = () => {
+      if (!playing) return;
+      const elapsed = performance.now() - start;
+      while (i < frames.length && (frames[i].t_mono_ns - t0) / 1e6 <= elapsed) {
+        const f = frames[i++];
+        feedBytes(bin.subarray(f.offset, f.offset + f.len), performance.now() / 1000);
+      }
+      playRaf = requestAnimationFrame(i < frames.length ? tick : runOnce);
+    };
+    playRaf = requestAnimationFrame(tick);
+  };
+  runOnce();
+}
+
+function stopPlay() {
+  playing = false;
+  cancelAnimationFrame(playRaf);
+  setStatus("Not connected", "idle");
+  cleanup();
+}
+
+playBtn.addEventListener("click", () => (playing ? stopPlay() : play()));
