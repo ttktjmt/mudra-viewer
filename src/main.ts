@@ -175,7 +175,9 @@ function cleanup() {
   playBtn.classList.remove("connected");
   playBtn.disabled = false;
   recording = false;
-  recordBtn.textContent = "● Record";
+  clearInterval(recTimer);
+  if (bannerEl.textContent?.startsWith("●")) bannerEl.style.display = "none";
+  recordBtn.textContent = "Record";
   recordBtn.classList.remove("connected");
   recordBtn.disabled = true; // re-enabled only once a live stream is up
 }
@@ -321,64 +323,48 @@ playMenu.addEventListener("click", (e) => {
 // Click anywhere else closes the menu.
 document.addEventListener("click", () => (playMenu.hidden = true));
 
-// --- Guided recording (device must be streaming) ---
-// Scripts the user through a fixed gesture protocol while stashing a copy of every
-// live SNC frame, then downloads capture.bin + index.json in the same shape the
-// playback loader above consumes. Pure client-side download — works identically on
-// GitHub Pages and localhost. Drop both files into public/fixtures/<name>/ to add a sample.
-const PROTOCOL = [
-  { label: "Grasp", reps: 3 },
-  { label: "Open", reps: 3 },
-  { label: "Pinch", reps: 3 },
-  { label: "Pronation", reps: 3 }, // 回内
-  { label: "Supination", reps: 3 }, // 回外
-];
-const STEP_SEC = 5;
-
+// --- Recording (device must be streaming) ---
+// Free-form: Record starts stashing a copy of every live SNC frame, Stop ends it and
+// downloads capture.bin + index.json in the same shape the playback loader above reads.
+// Pure client-side download — identical on GitHub Pages and localhost. Drop both files
+// into public/fixtures/<your-name>/ (you name the folder) and rebuild to add a sample.
 let recording = false;
 let recStart = 0;
 let recOffset = 0;
+let recTimer = 0;
 const recChunks: Uint8Array[] = [];
 const recFrames: Frame[] = [];
-const recMarkers: { label: string; reps: number; t_mono_ns: number }[] = [];
-const nowNs = () => Math.round((performance.now() - recStart) * 1e6);
 
 function recordFrame(bytes: Uint8Array) {
   const copy = bytes.slice(); // BLE reuses the DataView buffer — must copy before it changes
-  recFrames.push({ offset: recOffset, len: copy.length, uuid: uuid(CHAR_SNC), dir: "rx", t_mono_ns: nowNs() });
+  const t_mono_ns = Math.round((performance.now() - recStart) * 1e6);
+  recFrames.push({ offset: recOffset, len: copy.length, uuid: uuid(CHAR_SNC), dir: "rx", t_mono_ns });
   recChunks.push(copy);
   recOffset += copy.length;
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-async function record() {
-  recChunks.length = recFrames.length = recMarkers.length = 0;
+function startRecording() {
+  recChunks.length = recFrames.length = 0;
   recOffset = 0;
   recStart = performance.now();
   recording = true;
-  recordBtn.textContent = "■ Stop";
+  recordBtn.textContent = "Stop";
   recordBtn.classList.add("connected");
   connectBtn.disabled = playBtn.disabled = true;
+  recTimer = window.setInterval(() => {
+    bannerEl.style.display = "block";
+    bannerEl.textContent = `● Recording… ${Math.floor((performance.now() - recStart) / 1000)}s`;
+  }, 250);
+}
 
-  for (const step of PROTOCOL) {
-    if (!recording) break;
-    recMarkers.push({ label: step.label, reps: step.reps, t_mono_ns: nowNs() });
-    for (let s = STEP_SEC; s > 0 && recording; s--) {
-      bannerEl.style.display = "block";
-      bannerEl.textContent = `Recording — ${step.label} × ${step.reps}   ·   ${s}s`;
-      await sleep(1000);
-    }
-  }
-
-  const completed = recording; // false if the user hit Stop early → discard
+function stopRecording() {
   recording = false;
+  clearInterval(recTimer);
   bannerEl.style.display = "none";
-  recordBtn.textContent = "● Record";
+  recordBtn.textContent = "Record";
   recordBtn.classList.remove("connected");
   connectBtn.disabled = playBtn.disabled = false;
-
-  if (completed && recFrames.length) downloadRecording();
+  if (recFrames.length) downloadRecording();
   else setStatus("Streaming", "ok");
 }
 
@@ -386,11 +372,58 @@ function downloadRecording() {
   const bin = new Uint8Array(recOffset);
   let o = 0;
   for (const c of recChunks) { bin.set(c, o); o += c.length; }
-  const index = { frames: recFrames.map((f, i) => ({ i, ...f })), markers: recMarkers };
-  save(new Blob([bin]), "capture.bin");
-  save(new Blob([JSON.stringify(index)], { type: "application/json" }), "index.json");
-  setStatus("Saved capture.bin + index.json → drop into public/fixtures/<name>/", "ok");
+  const index = enc.encode(JSON.stringify({ frames: recFrames.map((f, i) => ({ i, ...f })) }));
+  // Fixed name: you rename record/ to your gesture name when dropping it into public/fixtures/.
+  const archive = zip([
+    { name: "record/capture.bin", data: bin },
+    { name: "record/index.json", data: index },
+  ]);
+  save(new Blob([archive], { type: "application/zip" }), "record.zip");
+  setStatus("Saved record.zip → unzip into public/fixtures/ and rename the folder", "ok");
 }
+
+// --- Minimal store-only (uncompressed) ZIP writer — no dependency ---
+const enc = new TextEncoder();
+const u16 = (n: number) => Uint8Array.of(n & 0xff, (n >> 8) & 0xff);
+const u32 = (n: number) => Uint8Array.of(n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >>> 24) & 0xff);
+const concat = (parts: Uint8Array[]) => {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+};
+const CRC_TABLE = Uint32Array.from({ length: 256 }, (_, i) => {
+  let c = i;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+function crc32(data: Uint8Array) {
+  let c = 0xffffffff;
+  for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function zip(files: { name: string; data: Uint8Array }[]) {
+  const local: Uint8Array[] = [];
+  const central: Uint8Array[] = [];
+  let offset = 0;
+  for (const f of files) {
+    const nb = enc.encode(f.name);
+    const crc = crc32(f.data);
+    const sz = f.data.length;
+    const header = concat([u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0),
+      u32(crc), u32(sz), u32(sz), u16(nb.length), u16(0), nb]);
+    local.push(header, f.data);
+    central.push(concat([u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0),
+      u32(crc), u32(sz), u32(sz), u16(nb.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(offset), nb]));
+    offset += header.length + sz;
+  }
+  const cd = concat(central);
+  const end = concat([u32(0x06054b50), u16(0), u16(0), u16(files.length), u16(files.length),
+    u32(cd.length), u32(offset), u16(0)]);
+  return concat([...local, cd, end]);
+}
+// self-check: CRC-32 of "123456789" is the standard 0xCBF43926 test vector
+if (import.meta.env.DEV && crc32(enc.encode("123456789")) !== 0xcbf43926) throw new Error("crc32 broken");
 
 function save(blob: Blob, filename: string) {
   const a = document.createElement("a");
@@ -400,5 +433,4 @@ function save(blob: Blob, filename: string) {
   URL.revokeObjectURL(a.href);
 }
 
-// Recording → Stop (discards). Idle → start the guided protocol.
-recordBtn.addEventListener("click", () => (recording ? (recording = false) : record()));
+recordBtn.addEventListener("click", () => (recording ? stopRecording() : startRecording()));
