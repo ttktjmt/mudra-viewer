@@ -47,6 +47,14 @@
       #status.ok { color: #0f9d58; }
       #status.error { color: #d92d20; }
       #status.busy { color: #d99a2b; }
+      #status { position: relative; }
+      #status::after {
+        content: attr(data-tip); position: absolute; top: 50%; right: 18px;
+        transform: translateY(-50%); white-space: nowrap; display: none;
+        padding: 4px 8px; border-radius: 4px; background: #3d3d3a; color: #fff;
+        font-size: 12px; font-weight: 400; pointer-events: none;
+      }
+      #status:hover::after { display: block; }
       #banner {
         display: none; padding: 10px 20px; background: #fbf0d9;
         color: #8a6d3b; border-bottom: 1px solid #ecdcb3;
@@ -63,7 +71,7 @@
   <body>
     <header>
       <h1>Mudra Viewer</h1>
-      <span id="status" title="Not connected"></span>
+      <span id="status" data-tip="Not connected"></span>
       <span id="play-wrap">
         <button id="play">Play ▾</button>
         <div id="play-menu" hidden></div>

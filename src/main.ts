@@ -42,7 +42,7 @@ const plotsEl = $("plots");
 type StatusKind = "idle" | "busy" | "ok" | "error";
 const setStatus = (text: string, kind: StatusKind = "idle") => {
   statusEl.className = kind === "idle" ? "" : kind;
-  statusEl.title = text;
+  statusEl.dataset.tip = text;
 };
 
 // --- Compatibility gate ---
@@ -206,14 +206,33 @@ function onDisconnected() {
 async function connect() {
   connectBtn.disabled = true;
   playBtn.disabled = true;
-  setStatus("Select a device…", "busy");
   try {
-    device = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: "Mudra" }, { namePrefix: "mudra" }],
-      optionalServices: [SERVICE],
-    });
+    // Reuse a retained device on reconnect instead of the chooser, which fails on
+    // macOS for this bonded, address-rotating band (docs/adr/0001).
+    if (!device) {
+      // getDevices() returns the already-granted device without scanning, so we can
+      // reconnect after a reload while macOS still holds the (non-advertising) link.
+      // Needs Chrome flags; falls back to the chooser. Match by stable id (name can
+      // be null for an OS-held device).
+      const granted = (await navigator.bluetooth.getDevices?.()) ?? [];
+      const savedId = localStorage.getItem("mudra-device-id");
+      const known =
+        granted.find((d) => d.id === savedId) ??
+        granted.find((d) => /^mudra/i.test(d.name ?? ""));
+      if (known) {
+        device = known;
+      } else {
+        setStatus("Select a device…", "busy");
+        device = await navigator.bluetooth.requestDevice({
+          filters: [{ namePrefix: "Mudra" }, { namePrefix: "mudra" }],
+          optionalServices: [SERVICE],
+        });
+      }
+      localStorage.setItem("mudra-device-id", device.id);
+      device.addEventListener("gattserverdisconnected", onDisconnected);
+    }
   } catch {
-    setStatus("Connection cancelled", "idle");
+    setStatus("Connection cancelled", "error");
     connectBtn.disabled = false;
     playBtn.disabled = false;
     return;
@@ -221,7 +240,6 @@ async function connect() {
 
   try {
     setStatus("Connecting…", "busy");
-    device.addEventListener("gattserverdisconnected", onDisconnected);
     const server = await device.gatt!.connect();
     const service = await server.getPrimaryService(uuid(SERVICE));
     sncChar = await service.getCharacteristic(uuid(CHAR_SNC));
@@ -241,15 +259,15 @@ async function connect() {
   } catch (err) {
     setStatus(`Connection failed: ${(err as Error).message}`, "error");
     device?.gatt?.disconnect();
+    device = null; // drop the stale ref so the next Connect re-picks via the chooser
     cleanup();
   }
 }
 
 async function disconnect() {
   connectBtn.disabled = true;
-  // Return the device to idle before dropping GATT. Skipping this leaves the
-  // firmware streaming, and macOS/CoreBluetooth then refuses the next connect
-  // until the user "Forget This Device". Best-effort: the link may already be gone.
+  // Stop the stream before dropping GATT; leaving it streaming makes macOS refuse
+  // the next connect until "Forget This Device". Best-effort — link may be gone.
   try {
     await cmdChar?.writeValue(DISABLE_SNC);
     await sncChar?.stopNotifications();
@@ -260,6 +278,26 @@ async function disconnect() {
 connectBtn.addEventListener("click", () =>
   connectBtn.classList.contains("connected") ? disconnect() : connect(),
 );
+
+// Tab close / reload: best-effort graceful stop before we go. The async write may
+// not flush, but gatt.disconnect() drops the link. pagehide also covers bfcache nav.
+window.addEventListener("pagehide", () => {
+  if (!device?.gatt?.connected) return;
+  cmdChar?.writeValue(DISABLE_SNC).catch(() => {});
+  device.gatt.disconnect();
+});
+
+// HMR reloads leave the BLE link up; unlike pagehide, dispose() can await a full stop.
+if (import.meta.hot) {
+  import.meta.hot.dispose(async () => {
+    if (!device?.gatt?.connected) return;
+    try {
+      await cmdChar?.writeValue(DISABLE_SNC);
+      await sncChar?.stopNotifications();
+    } catch { /* link may already be gone */ }
+    device.gatt.disconnect();
+  });
+}
 
 // --- Recorded-session playback (no device needed) ---
 // Replays a captured session's raw SNC frames through the same decode path as the
