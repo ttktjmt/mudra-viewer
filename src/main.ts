@@ -433,11 +433,6 @@ function cleanup() {
   if (M && dstPtr) { M._free(dstPtr); dstPtr = 0; }
   if (M && specPtr) { M._free(specPtr); specPtr = 0; }
   cursor = 0;
-  if (!specLocked) { // while locked, keep the frozen scale (and the lock) across sessions
-    specPeak = specTop = SPEC_PWR_MIN_TOP; // next session rescales from the default
-    peakBuckets.fill(0); peakHead = 0; peakHeadT = 0;
-  }
-  specTopT = 0;
   sampleQueue.length = 0; // stop feeding; the clock scrolls zeros in on its own
   connectBtn.textContent = "Connect";
   connectBtn.classList.remove("connected");
