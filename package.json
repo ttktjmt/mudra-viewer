@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "mudraka": "^0.3.0"
+    "mudraka": "^0.3.1"
   },
   "devDependencies": {
     "@types/web-bluetooth": "^0.0.20",
