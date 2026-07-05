@@ -34,7 +34,7 @@
       #play.connected, #record.connected { background: #4a4840; }
       #play-wrap { position: relative; }
       #play-menu {
-        position: absolute; top: calc(100% + 6px); right: 0; z-index: 10; min-width: 100%;
+        position: absolute; top: calc(100% + 6px); left: 0; z-index: 10; min-width: 100%;
         background: #faf9f5; border: 1px solid #e8e6dd; border-radius: 8px;
         box-shadow: 0 6px 20px rgba(61, 61, 58, 0.15); overflow: hidden; padding: 4px;
       }
@@ -81,6 +81,11 @@
         font-size: 12px; font-weight: 600; pointer-events: none;
       }
       #spec-legend span { background: #f5f4ee; padding: 1px 5px; border-radius: 3px; }
+      #spec-tip {
+        position: absolute; z-index: 2; display: none; white-space: nowrap;
+        padding: 4px 8px; border-radius: 4px; background: #3d3d3a; color: #fff;
+        font-size: 12px; font-weight: 400; pointer-events: none;
+      }
     </style>
   </head>
   <body>
@@ -102,6 +107,7 @@
     <div id="plots"></div>
     <div id="spectrum" hidden>
       <div id="spec-legend"></div>
+      <div id="spec-tip"></div>
       <canvas id="spec"></canvas>
     </div>
     <script type="module" src="/src/main.ts"></script>

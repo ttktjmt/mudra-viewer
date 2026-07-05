@@ -26,6 +26,11 @@ const SPEC_BINS = SPEC_WINDOW / 2 + 1;
 // an idle/noise-only frame stays flat instead of blowing the noise up to full scale.
 const SPEC_PWR_MIN_TOP = 5e4; // µV² — tune: minimum (default) for the peak-held axis top
 const SPEC_FLASH_MS = 900; // highlight fade duration when the peak-held axis top grows
+const SPEC_PEAK_WIN_S = 10; // trailing window (s) over which the axis top holds its peak
+const SPEC_SHRINK_TAU = 0.3; // s — exp time constant for shrinking the axis (~1 s settle; grow is instant)
+// Lock-toggle icons (Material Design Icons, 24×24 viewBox paths) drawn via Path2D on the canvas.
+const ICON_LOCK = new Path2D("M12 17a2 2 0 0 0 2-2a2 2 0 0 0-2-2a2 2 0 0 0-2 2a2 2 0 0 0 2 2m6-9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h1V6a5 5 0 0 1 5-5a5 5 0 0 1 5 5v2zm-6-5a3 3 0 0 0-3 3v2h6V6a3 3 0 0 0-3-3");
+const ICON_UPDOWN = new Path2D("M10 8H6l6-6l6 6h-4v8h4l-6 6l-6-6h4z");
 
 // --- DOM ---
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -38,6 +43,7 @@ const tabFreq = $<HTMLButtonElement>("tab-freq");
 const spectrumEl = $("spectrum");
 const specCanvas = $<HTMLCanvasElement>("spec");
 const specLegend = $("spec-legend");
+const specTip = $("spec-tip");
 
 // Fixtures under public/fixtures/ are detected at build time — drop a new
 // recording folder (with capture.bin + index.json) and it shows up in the dropdown.
@@ -100,6 +106,26 @@ function setView(v: typeof view) {
 }
 tabTime.addEventListener("click", () => setView("time"));
 tabFreq.addEventListener("click", () => setView("freq"));
+
+// Lock icon on the spectrum canvas: click toggles freezing the axis top; pointer on hover.
+const inLockBox = (e: MouseEvent) =>
+  e.offsetX >= lockBox.x && e.offsetX <= lockBox.x + lockBox.w &&
+  e.offsetY >= lockBox.y && e.offsetY <= lockBox.y + lockBox.h;
+// Instant DOM tooltip (same style as the status dot), positioned under the lock icon.
+const lockTip = () => (specLocked ? "Click to auto-scale" : "Click to lock");
+const showTip = () => {
+  specTip.textContent = lockTip();
+  specTip.style.left = `${lockBox.x}px`;
+  specTip.style.top = `${lockBox.y + lockBox.h + 2}px`;
+  specTip.style.display = "block";
+};
+specCanvas.addEventListener("click", (e) => { if (inLockBox(e)) { specLocked = !specLocked; showTip(); } });
+specCanvas.addEventListener("mousemove", (e) => {
+  const on = inLockBox(e);
+  specCanvas.style.cursor = on ? "pointer" : "default";
+  on ? showTip() : (specTip.style.display = "none");
+});
+specCanvas.addEventListener("mouseleave", () => (specTip.style.display = "none"));
 
 // Free-running display clock: advance the ring at RATE, draining queued samples
 // and writing zeros when the queue is empty. So the trace always scrolls — idle
@@ -184,7 +210,7 @@ function drawSpectrum() {
   const bins = res ? res.bins : 0;
 
   // Inset plot area so axes/labels don't hug the canvas edges and the whole trace is visible.
-  const ML = 66 * dpr, MR = 12 * dpr, MT = 12 * dpr, MB = 22 * dpr;
+  const ML = 70 * dpr, MR = 12 * dpr, MT = 12 * dpr, MB = 22 * dpr;
   const x0 = ML, x1 = w - MR, pw = x1 - x0;
   const y0 = MT, y1 = h - MB, ph = y1 - y0;
 
@@ -192,15 +218,26 @@ function drawSpectrum() {
   // wasm buffer ourselves. Rebuilt each frame — cheap, and survives heap growth.
   const f32 = bins >= 2 ? new Float32Array(M!.HEAPU8.buffer, specPtr, CH * bins) : null;
 
-  // Peak-hold axis top: grow specPeak to the largest power seen (DC bin k=0 excluded so a
-  // DC offset doesn't crush the rest). Held across frames for a stable scale; reset in cleanup().
-  const prevPeak = specPeak;
+  // Axis top: peak power this frame (DC bin k=0 excluded so a DC offset doesn't crush the
+  // rest) folded into the trailing-window max, so old transients age out. Grow -> flash.
+  let framePeak = 0;
   if (f32) for (let c = 0; c < CH; c++) for (let k = 1; k < bins; k++) {
     const p = f32[c * bins + k];
-    if (p > specPeak) specPeak = p;
+    if (p > framePeak) framePeak = p;
   }
-  if (specPeak > prevPeak) specPeakFlash = performance.now(); // top grew — trigger the highlight
-  const top = specPeak;
+  const now = performance.now();
+  // When locked, the axis top is frozen — no window update, no ease. Otherwise the displayed
+  // top follows the target: instant up, eased down (~SPEC_SHRINK_TAU) so it glides smaller.
+  if (!specLocked) {
+    const prevPeak = specPeak;
+    specPeak = windowPeak(framePeak, now); // target: trailing-window max
+    if (specPeak > prevPeak) specPeakFlash = now; // top grew — trigger the highlight
+    const dt = specTopT ? Math.min((now - specTopT) / 1000, 0.1) : 0;
+    if (specPeak >= specTop) specTop = specPeak;
+    else specTop += (specPeak - specTop) * (1 - Math.exp(-dt / SPEC_SHRINK_TAU));
+  }
+  specTopT = now; // always advance so dt stays sane across lock/unlock and tab pauses
+  const top = specTop;
   const pY = (p: number) => y1 - (p / top) * ph; // power 0 -> baseline, top -> ceiling
 
   // power gridlines (Y): fixed 20k µV² steps from 0, plus the peak max (top) line.
@@ -225,9 +262,9 @@ function drawSpectrum() {
   // top-of-axis (peak max) label; flash a fading accent background right after the peak grows
   const topLabel = `${fmtPwr(top)} µV²`;
   const ty = y0 + 10 * dpr;
-  const flash = Math.max(0, 1 - (performance.now() - specPeakFlash) / SPEC_FLASH_MS);
+  const tw = ctx.measureText(topLabel).width;
+  const flash = Math.max(0, 1 - (now - specPeakFlash) / SPEC_FLASH_MS);
   if (flash > 0) {
-    const tw = ctx.measureText(topLabel).width;
     ctx.fillStyle = rgba("#c96442", flash * 0.6); // main accent
     ctx.beginPath();
     ctx.roundRect(lx - tw - 4 * dpr, ty - 12 * dpr, tw + 8 * dpr, 17 * dpr, 3 * dpr);
@@ -235,7 +272,13 @@ function drawSpectrum() {
   }
   ctx.fillStyle = "#a5a294"; // text keeps its normal color; only the background flashes
   ctx.fillText(topLabel, lx, ty);
-  ctx.textAlign = "left"; // restore for the frequency labels below
+  ctx.textAlign = "left"; // restore for the labels below
+  // lock icon (MDI) just left of the label — click toggles freezing the axis top (see specCanvas click)
+  const s = 14 * dpr;
+  const iconX = lx - tw - 6 * dpr - s; // left edge, sits left of the right-aligned label
+  const iconY = ty - 12 * dpr;
+  drawIcon(ctx, specLocked ? ICON_LOCK : ICON_UPDOWN, iconX, iconY, s, "#a5a294");
+  lockBox = { x: (iconX - 3 * dpr) / dpr, y: (iconY - 2 * dpr) / dpr, w: (s + 6 * dpr) / dpr, h: (s + 4 * dpr) / dpr };
 
   // frequency ticks (X) — always drawn, even idle. Use the engine's rate when streaming,
   // else the nominal Nyquist so the axis is present before a window fills.
@@ -283,6 +326,33 @@ function fmtPwr(v: number) {
   return String(Math.round(v));
 }
 
+// Trailing-window max: age buckets forward by elapsed time (clearing vacated ones), fold in
+// this frame's peak, return max(default, all buckets). Old transients drop out after the window.
+function windowPeak(framePeak: number, now: number) {
+  const bucketMs = (SPEC_PEAK_WIN_S / PEAK_NB) * 1000;
+  if (!peakHeadT) peakHeadT = now;
+  let adv = Math.floor((now - peakHeadT) / bucketMs);
+  if (adv > 0) {
+    peakHeadT += adv * bucketMs;
+    if (adv > PEAK_NB) adv = PEAK_NB;
+    for (let i = 0; i < adv; i++) { peakHead = (peakHead + 1) % PEAK_NB; peakBuckets[peakHead] = 0; }
+  }
+  if (framePeak > peakBuckets[peakHead]) peakBuckets[peakHead] = framePeak;
+  let m = SPEC_PWR_MIN_TOP;
+  for (let i = 0; i < PEAK_NB; i++) if (peakBuckets[i] > m) m = peakBuckets[i];
+  return m;
+}
+
+// Draw a 24×24-viewBox icon path filled at (x,y) scaled to size s.
+function drawIcon(ctx: CanvasRenderingContext2D, path: Path2D, x: number, y: number, s: number, color: string) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(s / 24, s / 24);
+  ctx.fillStyle = color;
+  ctx.fill(path);
+  ctx.restore();
+}
+
 // "#rrggbb" -> "rgba(r,g,b,a)" for the under-curve fills.
 function rgba(hex: string, a: number) {
   const n = parseInt(hex.slice(1), 16);
@@ -296,10 +366,18 @@ let stream: Stream | null = null;
 let dstPtr = 0;
 let specPtr = 0;
 let cursor = 0;
-// Peak-hold for the power axis: holds the largest power seen this session (never shrinks),
-// so the scale is stable and readable. Reset to the default in cleanup() (play end / disconnect).
-let specPeak = SPEC_PWR_MIN_TOP;
+// Power axis top = max power over the trailing SPEC_PEAK_WIN_S window (never below the default),
+// so old transients age out and the scale settles back down. Bucketed sliding max (1 s buckets).
+let specPeak = SPEC_PWR_MIN_TOP; // window-max target the displayed top chases
+let specTop = SPEC_PWR_MIN_TOP; // displayed axis top (instant up, eased down)
+let specTopT = 0; // performance.now() of the last specTop update (for eased-down dt)
 let specPeakFlash = 0; // performance.now() when specPeak last grew (drives the highlight fade)
+let specLocked = false; // lock icon: freeze the axis top at its current value (ignore new peaks)
+let lockBox = { x: 0, y: 0, w: 0, h: 0 }; // lock icon hit region in CSS px (set each draw)
+const PEAK_NB = SPEC_PEAK_WIN_S; // one bucket per second
+const peakBuckets = new Float32Array(PEAK_NB); // max power seen in each bucket
+let peakHead = 0; // index of the current (newest) bucket
+let peakHeadT = 0; // performance.now() when the current bucket started
 let device: BluetoothDevice | null = null;
 let sncChar: BluetoothRemoteGATTCharacteristic | null = null;
 let cmdChar: BluetoothRemoteGATTCharacteristic | null = null;
@@ -355,7 +433,11 @@ function cleanup() {
   if (M && dstPtr) { M._free(dstPtr); dstPtr = 0; }
   if (M && specPtr) { M._free(specPtr); specPtr = 0; }
   cursor = 0;
-  specPeak = SPEC_PWR_MIN_TOP; // next session rescales from the default
+  if (!specLocked) { // while locked, keep the frozen scale (and the lock) across sessions
+    specPeak = specTop = SPEC_PWR_MIN_TOP; // next session rescales from the default
+    peakBuckets.fill(0); peakHead = 0; peakHeadT = 0;
+  }
+  specTopT = 0;
   sampleQueue.length = 0; // stop feeding; the clock scrolls zeros in on its own
   connectBtn.textContent = "Connect";
   connectBtn.classList.remove("connected");
