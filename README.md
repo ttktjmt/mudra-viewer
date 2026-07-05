@@ -9,6 +9,10 @@ Realtime EMG Signal Viewer for Mudra Link
   <a href="https://ttktjmt.github.io/mudra-viewer"><img src="docs/images/screenshot-freq.png" alt="Frequency domain view" height="250"></a>
 </p>
 
+<p align="center">
+  <em>Check out the app ― <a href="https://ttktjmt.github.io/mudra-viewer/">ttktjmt.github.io/mudra-viewer</a></em>
+</p>
+
 A static web app that connects to a Mudra Link directly from the browser over
 Web Bluetooth and shows its 3-channel sEMG waveforms in real time (~834 Hz).
 Decoding is done by [`mudraka`](https://github.com/ttktjmt/mudraka) (WASM);
