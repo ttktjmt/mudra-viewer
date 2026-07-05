@@ -23,6 +23,12 @@
         background: #c96442; color: #fff; font-size: 14px; font-weight: 600;
       }
       #play, #record { background: #6b6858; }
+      #tabs { display: flex; gap: 2px; background: #efece1; border-radius: 6px; padding: 2px; }
+      #tabs button {
+        border: 0; background: none; padding: 5px 12px; border-radius: 4px; cursor: pointer;
+        color: #6b6858; font-size: 13px; font-weight: 600;
+      }
+      #tabs button.active { background: #faf9f5; color: #3d3d3a; box-shadow: 0 1px 2px rgba(61, 61, 58, 0.1); }
       #connect:disabled, #play:disabled, #record:disabled { background: #e0ddd0; color: #a5a294; cursor: not-allowed; }
       #connect.connected { background: #b5482f; }
       #play.connected, #record.connected { background: #4a4840; }
@@ -60,17 +66,30 @@
         color: #8a6d3b; border-bottom: 1px solid #ecdcb3;
       }
       #plots { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+      #plots[hidden] { display: none; }
       .lane { flex: 1; position: relative; border-bottom: 1px solid #e8e6dd; min-height: 0; }
       .lane label {
         position: absolute; top: 6px; left: 10px; z-index: 1;
         color: #6b6858; font-size: 12px; pointer-events: none;
+        background: #f5f4ee; padding: 1px 5px; border-radius: 3px;
       }
       canvas { display: block; width: 100%; height: 100%; }
+      #spectrum { flex: 1; position: relative; min-height: 0; }
+      #spectrum[hidden] { display: none; }
+      #spec-legend {
+        position: absolute; top: 20px; right: 50px; z-index: 1; display: flex; gap: 14px;
+        font-size: 12px; font-weight: 600; pointer-events: none;
+      }
+      #spec-legend span { background: #f5f4ee; padding: 1px 5px; border-radius: 3px; }
     </style>
   </head>
   <body>
     <header>
       <h1>Mudra Viewer</h1>
+      <div id="tabs">
+        <button id="tab-time" class="active">Time</button>
+        <button id="tab-freq">Frequency</button>
+      </div>
       <span id="status" data-tip="Not connected"></span>
       <span id="play-wrap">
         <button id="play">Play ▾</button>
@@ -81,6 +100,10 @@
     </header>
     <div id="banner"></div>
     <div id="plots"></div>
+    <div id="spectrum" hidden>
+      <div id="spec-legend"></div>
+      <canvas id="spec"></canvas>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

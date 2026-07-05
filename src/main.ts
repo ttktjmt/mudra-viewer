@@ -18,12 +18,26 @@ const COLORS = ["#2563eb", "#0f9d58", "#c026d3"];
 // Mudra Link SNC is fixed 16-bit signed (docs); pin the amplitude to the full range.
 const AMP_HALF = 32768 * 1.1;
 
+// --- Spectrum (frequency-domain) view ---
+const SPEC_WINDOW = 512; // FFT size (pow2): 257 one-sided bins @ 834 Hz => ~1.63 Hz/bin, 0.6 s window
+const SPEC_BINS = SPEC_WINDOW / 2 + 1;
+// Power view: linear µV², so 0 is the natural baseline (power can't be negative). The axis
+// top autoscales to the current peak (DC bin excluded) but never below SPEC_PWR_MIN_TOP, so
+// an idle/noise-only frame stays flat instead of blowing the noise up to full scale.
+const SPEC_PWR_MIN_TOP = 5e4; // µV² — tune: minimum (default) for the peak-held axis top
+const SPEC_FLASH_MS = 900; // highlight fade duration when the peak-held axis top grows
+
 // --- DOM ---
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const connectBtn = $<HTMLButtonElement>("connect");
 const playBtn = $<HTMLButtonElement>("play");
 const recordBtn = $<HTMLButtonElement>("record");
 const playMenu = $("play-menu");
+const tabTime = $<HTMLButtonElement>("tab-time");
+const tabFreq = $<HTMLButtonElement>("tab-freq");
+const spectrumEl = $("spectrum");
+const specCanvas = $<HTMLCanvasElement>("spec");
+const specLegend = $("spec-legend");
 
 // Fixtures under public/fixtures/ are detected at build time — drop a new
 // recording folder (with capture.bin + index.json) and it shows up in the dropdown.
@@ -72,6 +86,21 @@ for (let c = 0; c < CH; c++) {
   canvases.push(canvas);
 }
 
+// --- View toggle (Time waveforms / Frequency spectrum), both off the same Stream ---
+specLegend.innerHTML = LABELS.map(
+  (l, i) => `<span style="color:${COLORS[i]}">${l}</span>`,
+).join("");
+let view: "time" | "freq" = "time";
+function setView(v: typeof view) {
+  view = v;
+  tabTime.classList.toggle("active", v === "time");
+  tabFreq.classList.toggle("active", v === "freq");
+  plotsEl.hidden = v !== "time";
+  spectrumEl.hidden = v !== "freq";
+}
+tabTime.addEventListener("click", () => setView("time"));
+tabFreq.addEventListener("click", () => setView("freq"));
+
 // Free-running display clock: advance the ring at RATE, draining queued samples
 // and writing zeros when the queue is empty. So the trace always scrolls — idle
 // shows a flat line, a finished recording scrolls out instead of snapping to zero.
@@ -89,8 +118,16 @@ function advanceRing(now: number) {
 }
 
 // --- Rendering (rAF, decoupled from BLE feed) ---
+// advanceRing always runs so the time view is live the instant you switch back to it;
+// the active tab decides which canvas we paint.
 function draw() {
   advanceRing(performance.now());
+  if (view === "freq") drawSpectrum();
+  else drawTime();
+  requestAnimationFrame(draw);
+}
+
+function drawTime() {
   for (let c = 0; c < CH; c++) {
     const canvas = canvases[c];
     const dpr = window.devicePixelRatio || 1;
@@ -126,7 +163,130 @@ function draw() {
     }
     ctx.stroke();
   }
-  requestAnimationFrame(draw);
+}
+
+// Overlaid one-sided spectrum (power), all channels on one axis. Pulls the newest window
+// from the engine on demand each frame; draws only the grid until a full window exists.
+function drawSpectrum() {
+  const canvas = specCanvas;
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.floor(canvas.clientWidth * dpr);
+  const h = Math.floor(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  const ctx = canvas.getContext("2d")!;
+  ctx.clearRect(0, 0, w, h);
+  ctx.font = `${11 * dpr}px system-ui`;
+
+  const res = stream ? stream.spectrumInto(specPtr) : null;
+  const bins = res ? res.bins : 0;
+
+  // Inset plot area so axes/labels don't hug the canvas edges and the whole trace is visible.
+  const ML = 66 * dpr, MR = 12 * dpr, MT = 12 * dpr, MB = 22 * dpr;
+  const x0 = ML, x1 = w - MR, pw = x1 - x0;
+  const y0 = MT, y1 = h - MB, ph = y1 - y0;
+
+  // mudraka 0.3.0 doesn't export Module.HEAPF32 (only HEAP32/HEAPU8), so view the shared
+  // wasm buffer ourselves. Rebuilt each frame — cheap, and survives heap growth.
+  const f32 = bins >= 2 ? new Float32Array(M!.HEAPU8.buffer, specPtr, CH * bins) : null;
+
+  // Peak-hold axis top: grow specPeak to the largest power seen (DC bin k=0 excluded so a
+  // DC offset doesn't crush the rest). Held across frames for a stable scale; reset in cleanup().
+  const prevPeak = specPeak;
+  if (f32) for (let c = 0; c < CH; c++) for (let k = 1; k < bins; k++) {
+    const p = f32[c * bins + k];
+    if (p > specPeak) specPeak = p;
+  }
+  if (specPeak > prevPeak) specPeakFlash = performance.now(); // top grew — trigger the highlight
+  const top = specPeak;
+  const pY = (p: number) => y1 - (p / top) * ph; // power 0 -> baseline, top -> ceiling
+
+  // power gridlines (Y): fixed 20k µV² steps from 0, plus the peak max (top) line.
+  // labels right-aligned in the left margin, each carrying the µV² unit.
+  ctx.strokeStyle = "#e8e6dd";
+  ctx.fillStyle = "#a5a294";
+  ctx.lineWidth = 1;
+  ctx.textAlign = "right";
+  const lx = x0 - 6 * dpr; // right edge for the y-axis labels
+  const STEP = 2e4; // µV² per tick
+  let step = STEP;
+  while (top / step > 50) step += STEP; // ponytail: 20k grid; coarsen only if the peak overcrowds
+  const line = (y: number) => { ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); };
+  for (let p = 0; p < top; p += step) {
+    const y = pY(p);
+    line(y);
+    // skip the label if this tick sits too close to the top (peak) label
+    if (y - y0 > 13 * dpr) ctx.fillText(`${fmtPwr(p)} µV²`, lx, y + 4 * dpr);
+  }
+  line(y0); // peak max line at the top of the plot
+
+  // top-of-axis (peak max) label; flash a fading accent background right after the peak grows
+  const topLabel = `${fmtPwr(top)} µV²`;
+  const ty = y0 + 10 * dpr;
+  const flash = Math.max(0, 1 - (performance.now() - specPeakFlash) / SPEC_FLASH_MS);
+  if (flash > 0) {
+    const tw = ctx.measureText(topLabel).width;
+    ctx.fillStyle = rgba("#c96442", flash * 0.6); // main accent
+    ctx.beginPath();
+    ctx.roundRect(lx - tw - 4 * dpr, ty - 12 * dpr, tw + 8 * dpr, 17 * dpr, 3 * dpr);
+    ctx.fill();
+  }
+  ctx.fillStyle = "#a5a294"; // text keeps its normal color; only the background flashes
+  ctx.fillText(topLabel, lx, ty);
+  ctx.textAlign = "left"; // restore for the frequency labels below
+
+  // frequency ticks (X) — always drawn, even idle. Use the engine's rate when streaming,
+  // else the nominal Nyquist so the axis is present before a window fills.
+  const nyq = (res ? res.rate_hz : RATE) / 2;
+  ctx.strokeStyle = "#efece1";
+  for (let hz = 0; hz < nyq; hz += 100) {
+    const x = x0 + (hz / nyq) * pw;
+    ctx.beginPath();
+    ctx.moveTo(x, y0);
+    ctx.lineTo(x, y1);
+    ctx.stroke();
+    // 0 Hz sits on the y-axis — nudge its label inward so it clears the power labels
+    ctx.fillText(`${hz} Hz`, hz === 0 ? x + 2 * dpr : x - 10 * dpr, y1 + 15 * dpr);
+  }
+
+  if (!f32) return; // spectrum disabled or window not yet full — just the grid + axis
+
+  // curves: bin k of channel c at f32[c * bins + k] (channel-major float32)
+  for (let c = 0; c < CH; c++) {
+    ctx.strokeStyle = COLORS[c];
+    ctx.lineWidth = dpr;
+    ctx.beginPath();
+    for (let k = 0; k < bins; k++) {
+      const x = x0 + (k / (bins - 1)) * pw;
+      const y = Math.max(y0, Math.min(y1, pY(f32[c * bins + k])));
+      k === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    // fill under the curve: extend the same path down to the plot baseline, translucent color
+    ctx.lineTo(x1, y1);
+    ctx.lineTo(x0, y1);
+    ctx.closePath();
+    ctx.fillStyle = rgba(COLORS[c], 0.12);
+    ctx.fill();
+  }
+}
+
+// Power label with an SI prefix on the number, unit fixed at µV²: "50k", "5M", "1.2G".
+// (Prefixing the number, not the squared unit, keeps 1000-steps and avoids mV² ambiguity.)
+function fmtPwr(v: number) {
+  const scale = (f: number, s: string) => (v / f >= 100 ? Math.round(v / f) : +(v / f).toFixed(1)) + s;
+  if (v >= 1e9) return scale(1e9, "G");
+  if (v >= 1e6) return scale(1e6, "M");
+  if (v >= 1e3) return scale(1e3, "k");
+  return String(Math.round(v));
+}
+
+// "#rrggbb" -> "rgba(r,g,b,a)" for the under-curve fills.
+function rgba(hex: string, a: number) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
 }
 requestAnimationFrame(draw);
 
@@ -134,7 +294,12 @@ requestAnimationFrame(draw);
 let M: MudrakaModule | null = null;
 let stream: Stream | null = null;
 let dstPtr = 0;
+let specPtr = 0;
 let cursor = 0;
+// Peak-hold for the power axis: holds the largest power seen this session (never shrinks),
+// so the scale is stable and readable. Reset to the default in cleanup() (play end / disconnect).
+let specPeak = SPEC_PWR_MIN_TOP;
+let specPeakFlash = 0; // performance.now() when specPeak last grew (drives the highlight fade)
 let device: BluetoothDevice | null = null;
 let sncChar: BluetoothRemoteGATTCharacteristic | null = null;
 let cmdChar: BluetoothRemoteGATTCharacteristic | null = null;
@@ -164,8 +329,14 @@ function feedBytes(bytes: Uint8Array, tSec: number) {
 
 async function setupEngine() {
   if (!M) M = await createMudraka({ locateFile: () => wasmUrl });
-  stream = new M.Stream(M.makeConfig(CH, RATE, 4));
+  const cfg = M.makeConfig(CH, RATE, 4);
+  // Opt into the frequency-domain view. Ordinals passed as literals (WindowFn.hann=1,
+  // SpectrumOutput.power=1): const-enum values from the .d.ts don't survive esbuild transpile.
+  M.enableSpectrum(cfg, SPEC_WINDOW, 1 /* hann */, 1 /* power µV² */, true /* µV */);
+  stream = new M.Stream(cfg);
+  cfg.delete(); // Stream copies the config; free the builder
   dstPtr = M._malloc(CH * MAX_PULL * 4);
+  specPtr = M._malloc(CH * SPEC_BINS * 4);
   cursor = 0;
 }
 
@@ -182,7 +353,9 @@ function cleanup() {
   cmdChar = null;
   if (stream) { stream.delete(); stream = null; }
   if (M && dstPtr) { M._free(dstPtr); dstPtr = 0; }
+  if (M && specPtr) { M._free(specPtr); specPtr = 0; }
   cursor = 0;
+  specPeak = SPEC_PWR_MIN_TOP; // next session rescales from the default
   sampleQueue.length = 0; // stop feeding; the clock scrolls zeros in on its own
   connectBtn.textContent = "Connect";
   connectBtn.classList.remove("connected");
