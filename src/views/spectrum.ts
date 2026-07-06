@@ -3,9 +3,7 @@ import type { MudrakaModule, Stream } from "mudraka";
 // --- Spectrum (frequency-domain) view ---
 export const SPEC_WINDOW = 512; // FFT size (pow2): 257 one-sided bins @ 834 Hz => ~1.63 Hz/bin, 0.6 s window
 export const SPEC_BINS = SPEC_WINDOW / 2 + 1;
-// Power view: linear µV², so 0 is the natural baseline (power can't be negative). The axis
-// top autoscales to the current peak (DC bin excluded) but never below SPEC_PWR_MIN_TOP, so
-// an idle/noise-only frame stays flat instead of blowing the noise up to full scale.
+// Power view: linear µV² (0 baseline, power can't go negative); axis top autoscales to the peak (DC bin excluded), floored at SPEC_PWR_MIN_TOP so idle/noise frames stay flat.
 const SPEC_PWR_MIN_TOP = 5e4; // µV² — tune: minimum (default) for the peak-held axis top
 const SPEC_FLASH_MS = 900; // highlight fade duration when the peak-held axis top grows
 const SPEC_PEAK_WIN_S = 10; // trailing window (s) over which the axis top holds its peak
@@ -16,13 +14,9 @@ const ICON_UPDOWN = new Path2D("M10 8H6l6-6l6 6h-4v8h4l-6 6l-6-6h4z");
 
 const PEAK_NB = SPEC_PEAK_WIN_S; // one bucket per second
 
-// Overlaid one-sided spectrum (power), all channels on one axis. Pulls the newest window
-// from the engine on demand each frame; draws only the grid until a full window exists.
-// Owns the axis-top animation state and the lock icon hit-region, so the caller only wires
-// DOM events (click/hover) through hitTest/toggleLock/locked.
+// Overlaid one-sided power spectrum, all channels on one axis, pulled from the engine on demand each frame; owns axis-top animation + lock-icon hit-region, caller just wires DOM events via hitTest/toggleLock/locked.
 export function createSpectrumView(canvas: HTMLCanvasElement, colors: string[]) {
-  // Power axis top = max power over the trailing SPEC_PEAK_WIN_S window (never below the default),
-  // so old transients age out and the scale settles back down. Bucketed sliding max (1 s buckets).
+  // Power axis top = bucketed sliding max (1 s buckets) over the trailing SPEC_PEAK_WIN_S window, floored at the default, so old transients age out and the scale settles back down.
   let specPeak = SPEC_PWR_MIN_TOP; // window-max target the displayed top chases
   let specTop = SPEC_PWR_MIN_TOP; // displayed axis top (instant up, eased down)
   let specTopT = 0; // performance.now() of the last specTop update (for eased-down dt)
@@ -33,8 +27,7 @@ export function createSpectrumView(canvas: HTMLCanvasElement, colors: string[]) 
   let peakHead = 0; // index of the current (newest) bucket
   let peakHeadT = 0; // performance.now() when the current bucket started
 
-  // Trailing-window max: age buckets forward by elapsed time (clearing vacated ones), fold in
-  // this frame's peak, return max(default, all buckets). Old transients drop out after the window.
+  // Trailing-window max: age buckets forward by elapsed time (clearing vacated ones), fold in this frame's peak, and return max(default, all buckets) — old transients drop out after the window.
   function windowPeak(framePeak: number, now: number) {
     const bucketMs = (SPEC_PEAK_WIN_S / PEAK_NB) * 1000;
     if (!peakHeadT) peakHeadT = now;
@@ -70,20 +63,17 @@ export function createSpectrumView(canvas: HTMLCanvasElement, colors: string[]) 
     const x0 = ML, x1 = w - MR, pw = x1 - x0;
     const y0 = MT, y1 = h - MB, ph = y1 - y0;
 
-    // mudraka 0.3.0 doesn't export Module.HEAPF32 (only HEAP32/HEAPU8), so view the shared
-    // wasm buffer ourselves. Rebuilt each frame — cheap, and survives heap growth.
+    // mudraka 0.3.0 doesn't export Module.HEAPF32 (only HEAP32/HEAPU8), so view the shared wasm buffer ourselves — rebuilt each frame, cheap, and survives heap growth.
     const f32 = bins >= 2 ? new Float32Array(M!.HEAPU8.buffer, specPtr, ch * bins) : null;
 
-    // Axis top: peak power this frame (DC bin k=0 excluded so a DC offset doesn't crush the
-    // rest) folded into the trailing-window max, so old transients age out. Grow -> flash.
+    // Axis top: peak power this frame (DC bin k=0 excluded so a DC offset doesn't crush the rest), folded into the trailing-window max; growing triggers the flash.
     let framePeak = 0;
     if (f32) for (let c = 0; c < ch; c++) for (let k = 1; k < bins; k++) {
       const p = f32[c * bins + k];
       if (p > framePeak) framePeak = p;
     }
     const now = performance.now();
-    // When locked, the axis top is frozen — no window update, no ease. Otherwise the displayed
-    // top follows the target: instant up, eased down (~SPEC_SHRINK_TAU) so it glides smaller.
+    // When locked, the axis top is frozen (no window update, no ease); otherwise it follows the target — instant up, eased down (~SPEC_SHRINK_TAU) so it glides smaller.
     if (!specLocked) {
       const prevPeak = specPeak;
       specPeak = windowPeak(framePeak, now); // target: trailing-window max
@@ -96,8 +86,7 @@ export function createSpectrumView(canvas: HTMLCanvasElement, colors: string[]) 
     const top = specTop;
     const pY = (p: number) => y1 - (p / top) * ph; // power 0 -> baseline, top -> ceiling
 
-    // power gridlines (Y): fixed 20k µV² steps from 0, plus the peak max (top) line.
-    // labels right-aligned in the left margin, each carrying the µV² unit.
+    // power gridlines (Y): fixed 20k µV² steps from 0 plus the peak max (top) line, labels right-aligned in the left margin with the µV² unit.
     ctx.strokeStyle = "#e8e6dd";
     ctx.fillStyle = "#a5a294";
     ctx.lineWidth = 1;
@@ -121,7 +110,7 @@ export function createSpectrumView(canvas: HTMLCanvasElement, colors: string[]) 
     const tw = ctx.measureText(topLabel).width;
     const flash = Math.max(0, 1 - (now - specPeakFlash) / SPEC_FLASH_MS);
     if (flash > 0) {
-      ctx.fillStyle = rgba("#c96442", flash * 0.6); // main accent
+      ctx.fillStyle = rgba("#c96442", flash * 0.6);
       ctx.beginPath();
       ctx.roundRect(lx - tw - 4 * dpr, ty - 12 * dpr, tw + 8 * dpr, 17 * dpr, 3 * dpr);
       ctx.fill();
@@ -136,8 +125,7 @@ export function createSpectrumView(canvas: HTMLCanvasElement, colors: string[]) 
     drawIcon(ctx, specLocked ? ICON_LOCK : ICON_UPDOWN, iconX, iconY, s, "#a5a294");
     lockBox = { x: (iconX - 3 * dpr) / dpr, y: (iconY - 2 * dpr) / dpr, w: (s + 6 * dpr) / dpr, h: (s + 4 * dpr) / dpr };
 
-    // frequency ticks (X) — always drawn, even idle. Use the engine's rate when streaming,
-    // else the nominal Nyquist so the axis is present before a window fills.
+    // frequency ticks (X) — always drawn, even idle, using the engine's rate when streaming or the nominal Nyquist so the axis is present before a window fills.
     const nyq = (res ? res.rate_hz : nominalRate) / 2;
     ctx.strokeStyle = "#efece1";
     for (let hz = 0; hz < nyq; hz += 100) {
@@ -189,8 +177,7 @@ export function createSpectrumView(canvas: HTMLCanvasElement, colors: string[]) 
   };
 }
 
-// Power label with an SI prefix on the number, unit fixed at µV²: "50k", "5M", "1.2G".
-// (Prefixing the number, not the squared unit, keeps 1000-steps and avoids mV² ambiguity.)
+// Power label with an SI prefix on the number, unit fixed at µV² ("50k", "5M", "1.2G") — prefixing the number, not the squared unit, keeps 1000-steps and avoids mV² ambiguity.
 function fmtPwr(v: number) {
   const scale = (f: number, s: string) => (v / f >= 100 ? Math.round(v / f) : +(v / f).toFixed(1)) + s;
   if (v >= 1e9) return scale(1e9, "G");

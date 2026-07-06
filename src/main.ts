@@ -2,6 +2,7 @@ import createMudraka, { type MudrakaModule, type Stream } from "mudraka";
 import wasmUrl from "mudraka/mudraka.wasm?url";
 import { drawTime } from "./views/time";
 import { createSpectrumView, SPEC_WINDOW, SPEC_BINS } from "./views/spectrum";
+import { createManifoldView } from "./views/manifold";
 import { zip } from "./zip";
 
 // --- Mudra Link BLE constants (see mudraka docs/MUDRA_LINK_SIGNAL_SPEC.md) ---
@@ -27,13 +28,19 @@ const recordBtn = $<HTMLButtonElement>("record");
 const playMenu = $("play-menu");
 const tabTime = $<HTMLButtonElement>("tab-time");
 const tabFreq = $<HTMLButtonElement>("tab-freq");
+const tabManifold = $<HTMLButtonElement>("tab-manifold");
 const spectrumEl = $("spectrum");
 const specCanvas = $<HTMLCanvasElement>("spec");
 const specLegend = $("spec-legend");
 const specTip = $("spec-tip");
+const manifoldEl = $("manifold");
+const manifoldCanvas = $<HTMLCanvasElement>("manifold-canvas");
+const manifoldTip = $("manifold-tip");
+const manifoldInfoBtn = $<HTMLButtonElement>("manifold-info");
+const manifoldDialog = $<HTMLDialogElement>("manifold-dialog");
+const manifoldDialogClose = $<HTMLButtonElement>("manifold-dialog-close");
 
-// Fixtures under public/fixtures/ are detected at build time — drop a new
-// recording folder (with capture.bin + index.json) and it shows up in the dropdown.
+// Fixtures under public/fixtures/ are detected at build time — drop a new recording folder (with capture.bin + index.json) and it shows up in the dropdown.
 const FIXTURES = Object.keys(import.meta.glob("/public/fixtures/*/index.json"))
   .map((p) => p.split("/")[3])
   .sort();
@@ -63,8 +70,7 @@ if (!navigator.bluetooth) {
 // --- Display ring buffers (one Float32Array per channel, shared write cursor) ---
 const rings = Array.from({ length: CH }, () => new Float32Array(WINDOW));
 let writeIdx = 0; // next write position; total count is unbounded but we only keep WINDOW
-// Decoded samples land here; the free-running display clock (see advanceRing) drains
-// them at RATE. Whatever source is active (live BLE / recorded playback) just fills it.
+// Decoded samples land here; the free-running display clock (see advanceRing) drains them at RATE — whatever source is active (live BLE / recorded playback) just fills it.
 const sampleQueue: number[][] = [];
 const canvases: HTMLCanvasElement[] = [];
 for (let c = 0; c < CH; c++) {
@@ -79,25 +85,68 @@ for (let c = 0; c < CH; c++) {
   canvases.push(canvas);
 }
 
-// --- View toggle (Time waveforms / Frequency spectrum), both off the same Stream ---
+// --- View toggle (Time / Frequency / Manifold), both off the same Stream ---
+// Each tab is also a shareable route (/time, /freq, /manifold) with working back/forward; navigation stays client-side so switching views never drops the live BLE connection.
+// GH Pages has no server-side SPA fallback, so the build copies index.html to 404.html (see package.json) to serve direct hits.
 specLegend.innerHTML = LABELS.map(
   (l, i) => `<span style="color:${COLORS[i]}">${l}</span>`,
 ).join("");
-let view: "time" | "freq" = "time";
-function setView(v: typeof view) {
+type View = "time" | "freq" | "manifold";
+const VIEWS: View[] = ["time", "freq", "manifold"];
+const pathForView = (v: View) => import.meta.env.BASE_URL + v;
+const viewFromPath = (pathname: string): View => {
+  const rel = pathname.slice(import.meta.env.BASE_URL.length).replace(/\/$/, "");
+  return (VIEWS as string[]).includes(rel) ? (rel as View) : "time";
+};
+
+let view: View = viewFromPath(location.pathname);
+function setView(v: View) {
   view = v;
   tabTime.classList.toggle("active", v === "time");
   tabFreq.classList.toggle("active", v === "freq");
+  tabManifold.classList.toggle("active", v === "manifold");
   plotsEl.hidden = v !== "time";
   spectrumEl.hidden = v !== "freq";
+  manifoldEl.hidden = v !== "manifold";
+  if (v === "manifold") manifoldView.reset(); // fresh point cloud each time the tab opens
 }
-tabTime.addEventListener("click", () => setView("time"));
-tabFreq.addEventListener("click", () => setView("freq"));
+function navigate(v: View) {
+  if (v !== view) history.pushState(null, "", pathForView(v));
+  setView(v);
+}
+history.replaceState(null, "", pathForView(view)); // canonicalize "/" (or an unknown path) to "/time"
+setView(view);
+window.addEventListener("popstate", () => setView(viewFromPath(location.pathname)));
+tabTime.addEventListener("click", () => navigate("time"));
+tabFreq.addEventListener("click", () => navigate("freq"));
+tabManifold.addEventListener("click", () => navigate("manifold"));
 
 const spectrumView = createSpectrumView(specCanvas, COLORS);
+const manifoldView = createManifoldView(manifoldCanvas);
 
-// Lock icon on the spectrum canvas: click toggles freezing the axis top; pointer on hover.
-// Instant DOM tooltip (same style as the status dot), positioned under the lock icon.
+// Mode-toggle icon on the manifold canvas: click switches Plane <-> Cube, pointer on hover — same DOM-tooltip pattern as the spectrum lock icon (see specTip above).
+const modeTip = () => (manifoldView.mode === "cube" ? "Click for Plane view" : "Click for Cube view");
+const showManifoldTip = () => {
+  const box = manifoldView.iconBox;
+  manifoldTip.textContent = modeTip();
+  manifoldTip.style.left = `${box.x}px`;
+  manifoldTip.style.top = `${box.y + box.h + 2}px`;
+  manifoldTip.style.display = "block";
+};
+manifoldCanvas.addEventListener("click", (e) => {
+  if (manifoldView.hitTest(e.offsetX, e.offsetY)) { manifoldView.toggleMode(); showManifoldTip(); }
+});
+manifoldCanvas.addEventListener("mousemove", (e) => {
+  const on = manifoldView.hitTest(e.offsetX, e.offsetY);
+  manifoldCanvas.style.cursor = on ? "pointer" : manifoldView.mode === "cube" ? "grab" : "default";
+  on ? showManifoldTip() : (manifoldTip.style.display = "none");
+});
+manifoldCanvas.addEventListener("mouseleave", () => (manifoldTip.style.display = "none"));
+
+manifoldInfoBtn.addEventListener("click", () => manifoldDialog.showModal());
+manifoldDialogClose.addEventListener("click", () => manifoldDialog.close());
+
+// Lock icon on the spectrum canvas: click toggles freezing the axis top, pointer on hover — instant DOM tooltip (same style as the status dot), positioned under the lock icon.
 const lockTip = () => (spectrumView.locked ? "Click to auto-scale" : "Click to lock");
 const showTip = () => {
   const box = spectrumView.lockBox;
@@ -116,9 +165,8 @@ specCanvas.addEventListener("mousemove", (e) => {
 });
 specCanvas.addEventListener("mouseleave", () => (specTip.style.display = "none"));
 
-// Free-running display clock: advance the ring at RATE, draining queued samples
-// and writing zeros when the queue is empty. So the trace always scrolls — idle
-// shows a flat line, a finished recording scrolls out instead of snapping to zero.
+// Free-running display clock: advance the ring at RATE, draining queued samples and
+// writing zeros when empty, so idle shows a flat line and a finished recording scrolls out instead of snapping to zero.
 let lastAdvance = 0;
 function advanceRing(now: number) {
   if (!lastAdvance) lastAdvance = now;
@@ -133,11 +181,11 @@ function advanceRing(now: number) {
 }
 
 // --- Rendering (rAF, decoupled from BLE feed) ---
-// advanceRing always runs so the time view is live the instant you switch back to it;
-// the active tab decides which canvas we paint.
+// advanceRing always runs so the time view is live the instant you switch back to it; the active tab decides which canvas we paint.
 function draw() {
   advanceRing(performance.now());
   if (view === "freq") spectrumView.draw(M, specPtr, stream, CH, RATE);
+  else if (view === "manifold") manifoldView.draw(M, specPtr, stream, CH);
   else drawTime(canvases, rings, writeIdx, COLORS);
   requestAnimationFrame(draw);
 }
@@ -155,8 +203,7 @@ let cmdChar: BluetoothRemoteGATTCharacteristic | null = null;
 
 const MAX_PULL = 256;
 
-// Shared decode path: raw SNC frame bytes in, decoded samples pushed to display.
-// Both the live BLE feed and the recorded-session playback go through here.
+// Shared decode path: raw SNC frame bytes in, decoded samples pushed to display — both the live BLE feed and the recorded-session playback go through here.
 function feedBytes(bytes: Uint8Array, tSec: number) {
   stream!.feed(bytes, tSec);
   const base = dstPtr >> 2;
@@ -179,8 +226,7 @@ function feedBytes(bytes: Uint8Array, tSec: number) {
 async function setupEngine() {
   if (!M) M = await createMudraka({ locateFile: () => wasmUrl });
   const cfg = M.makeConfig(CH, RATE, 4);
-  // Opt into the frequency-domain view. Ordinals passed as literals (WindowFn.hann=1,
-  // SpectrumOutput.power=1): const-enum values from the .d.ts don't survive esbuild transpile.
+  // Opt into the frequency-domain view. Ordinals passed as literals (WindowFn.hann=1, SpectrumOutput.power=1): const-enum values from the .d.ts don't survive esbuild transpile.
   M.enableSpectrum(cfg, SPEC_WINDOW, 1 /* hann */, 1 /* power µV² */, true /* µV */);
   stream = new M.Stream(cfg);
   cfg.delete(); // Stream copies the config; free the builder
@@ -228,13 +274,10 @@ async function connect() {
   connectBtn.disabled = true;
   playBtn.disabled = true;
   try {
-    // Reuse a retained device on reconnect instead of the chooser, which fails on
-    // macOS for this bonded, address-rotating band (docs/adr/0001).
+    // Reuse a retained device on reconnect instead of the chooser, which fails on macOS for this bonded, address-rotating band (docs/adr/0001).
     if (!device) {
-      // getDevices() returns the already-granted device without scanning, so we can
-      // reconnect after a reload while macOS still holds the (non-advertising) link.
-      // Needs Chrome flags; falls back to the chooser. Match by stable id (name can
-      // be null for an OS-held device).
+      // getDevices() returns the already-granted device without scanning, so we can reconnect after a reload while macOS still holds the (non-advertising) link — needs Chrome flags, falls back to the chooser.
+      // Match by stable id (name can be null for an OS-held device).
       const granted = (await navigator.bluetooth.getDevices?.()) ?? [];
       const savedId = localStorage.getItem("mudra-device-id");
       const known =
@@ -287,8 +330,7 @@ async function connect() {
 
 async function disconnect() {
   connectBtn.disabled = true;
-  // Stop the stream before dropping GATT; leaving it streaming makes macOS refuse
-  // the next connect until "Forget This Device". Best-effort — link may be gone.
+  // Stop the stream before dropping GATT; leaving it streaming makes macOS refuse the next connect until "Forget This Device" — best-effort, link may be gone.
   try {
     await cmdChar?.writeValue(DISABLE_SNC);
     await sncChar?.stopNotifications();
@@ -300,8 +342,7 @@ connectBtn.addEventListener("click", () =>
   connectBtn.classList.contains("connected") ? disconnect() : connect(),
 );
 
-// Tab close / reload: best-effort graceful stop before we go. The async write may
-// not flush, but gatt.disconnect() drops the link. pagehide also covers bfcache nav.
+// Tab close / reload: best-effort graceful stop before we go — the async write may not flush, but gatt.disconnect() drops the link; pagehide also covers bfcache nav.
 window.addEventListener("pagehide", () => {
   if (!device?.gatt?.connected) return;
   cmdChar?.writeValue(DISABLE_SNC).catch(() => {});
@@ -321,8 +362,7 @@ if (import.meta.hot) {
 }
 
 // --- Recorded-session playback (no device needed) ---
-// Replays a captured session's raw SNC frames through the same decode path as the
-// live BLE feed, at the frames' recorded cadence. Plays through once, then stops.
+// Replays a captured session's raw SNC frames through the same decode path as the live BLE feed, at the frames' recorded cadence — plays through once, then stops.
 let playing = false;
 let playRaf = 0;
 
@@ -399,10 +439,8 @@ playMenu.addEventListener("click", (e) => {
 document.addEventListener("click", () => (playMenu.hidden = true));
 
 // --- Recording (device must be streaming) ---
-// Free-form: Record starts stashing a copy of every live SNC frame, Stop ends it and
-// downloads capture.bin + index.json in the same shape the playback loader above reads.
-// Pure client-side download — identical on GitHub Pages and localhost. Drop both files
-// into public/fixtures/<your-name>/ (you name the folder) and rebuild to add a sample.
+// Free-form: Record starts stashing a copy of every live SNC frame, Stop ends it and downloads capture.bin + index.json in the same shape the playback loader above reads.
+// Pure client-side download, identical on GitHub Pages and localhost — drop both files into public/fixtures/<your-name>/ (you name the folder) and rebuild to add a sample.
 let recording = false;
 let recStart = 0;
 let recOffset = 0;

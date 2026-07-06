@@ -1,0 +1,16 @@
+%% Muscle Manifold view — process diagram (docs/adr/0002-manifold-view-design.md).
+%% Rendered once to public/manifold-flow.svg via the public mermaid.ink API — no local
+%% mermaid dependency. To regenerate after editing this file, run from the repo root:
+%%   base64() { python3 -c 'import base64,sys; print(base64.urlsafe_b64encode(sys.stdin.buffer.read()).decode())'; }
+%%   curl -s "https://mermaid.ink/svg/$(base64 < docs/manifold-flow.mmd)" -o public/manifold-flow.svg
+flowchart TD
+    A["Live spectrum per channel<br/>(stream.spectrumInto)"] --> B["Filterbank feature extraction<br/>(variable-width windows around N center frequencies)"]
+    B --> C["Feature vector sampled every 0.1s<br/>(configurable)"]
+    C --> D["Ring buffer<br/>(300 samples, configurable)"]
+    D -->|"every 10th new sample"| E["PCA refit<br/>2 components (Plane) or 3 (Cube)"]
+    D -->|"new sample, model unchanged"| F["Project with current PCA model"]
+    E --> G["Animate: tween every point<br/>old to new position, 500ms eased"]
+    F --> H["New point fades in<br/>via age-based opacity"]
+    G --> I["Render: point cloud + convex hull fill<br/>(Graham scan 2D / incremental hull 3D)"]
+    H --> I
+    J["Plane / Cube toggle"] --> E

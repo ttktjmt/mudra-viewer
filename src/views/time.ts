@@ -19,7 +19,6 @@ export function drawTime(canvases: HTMLCanvasElement[], rings: Float32Array[], w
     const ring = rings[c];
     const half = AMP_HALF; // fixed full-scale, no auto-adjust
 
-    // zero line
     ctx.strokeStyle = "#e0ddd0";
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -27,7 +26,6 @@ export function drawTime(canvases: HTMLCanvasElement[], rings: Float32Array[], w
     ctx.lineTo(w, h / 2);
     ctx.stroke();
 
-    // waveform: oldest sample at left, newest at right
     ctx.strokeStyle = colors[c];
     ctx.lineWidth = dpr;
     ctx.beginPath();
