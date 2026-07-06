@@ -84,6 +84,12 @@ if (!navigator.bluetooth) {
   bannerEl.style.display = "block";
   bannerEl.textContent =
     "This browser does not support Web Bluetooth. Please open in Chrome or Edge (desktop / Android). iOS is not supported.";
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "banner-close";
+  closeBtn.setAttribute("aria-label", "Dismiss");
+  closeBtn.textContent = "×";
+  closeBtn.onclick = () => { bannerEl.style.display = "none"; };
+  bannerEl.append(closeBtn);
   connectBtn.disabled = true;
 }
 

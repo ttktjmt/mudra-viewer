@@ -82,8 +82,13 @@
       }
       #status:hover::after { opacity: 1; transform: translateY(-50%) translateX(0); }
       #banner {
-        display: none; padding: 10px 20px; background: #fbf0d9;
+        display: none; position: relative; padding: 10px 40px 10px 20px; background: #fbf0d9;
         color: #8a6d3b; border-bottom: 1px solid #ecdcb3;
+      }
+      .banner-close {
+        position: absolute; top: 50%; right: 12px; transform: translateY(-50%);
+        border: none; background: none; color: inherit; font-size: 18px; line-height: 1;
+        cursor: pointer; padding: 4px;
       }
       #plots { flex: 1; display: flex; flex-direction: column; min-height: 0; }
       #plots[hidden] { display: none; }
