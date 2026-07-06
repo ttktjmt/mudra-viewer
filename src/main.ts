@@ -25,10 +25,29 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 const connectBtn = $<HTMLButtonElement>("connect");
 const playBtn = $<HTMLButtonElement>("play");
 const recordBtn = $<HTMLButtonElement>("record");
+
+// Icons: inline SVG (lucide paths), same no-dependency policy as the rest of the UI. Label text
+// is hidden on narrow (mobile) viewports via CSS, leaving just the icon — see index.html's media query.
+const ICON_PLAY = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>`;
+const ICON_SQUARE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>`;
+const ICON_CIRCLE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/></svg>`;
+const ICON_CIRCLE_REC = `<svg viewBox="0 0 24 24" fill="#d92d20" stroke="#d92d20" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>`;
+const ICON_BLUETOOTH = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 7 10 10-5 5V2l5 5L7 17"/></svg>`;
+const ICON_BLUETOOTH_OFF = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 17-5 5V12l-5 5"/><path d="M2 2l20 20"/><path d="M14.5 9.5 17 7l-5-5v4.5"/></svg>`;
+
+function setBtn(btn: HTMLButtonElement, icon: string, label: string) {
+  btn.innerHTML = `${icon}<span class="label">${label}</span>`;
+  btn.setAttribute("aria-label", label.replace(/\s*▾$/, ""));
+}
+
+setBtn(connectBtn, ICON_BLUETOOTH, "Connect");
+setBtn(playBtn, ICON_PLAY, "Play ▾");
+setBtn(recordBtn, ICON_CIRCLE, "Record");
 const playMenu = $("play-menu");
 const tabTime = $<HTMLButtonElement>("tab-time");
 const tabFreq = $<HTMLButtonElement>("tab-freq");
 const tabManifold = $<HTMLButtonElement>("tab-manifold");
+const tabsIndicator = $("tabs-indicator");
 const spectrumEl = $("spectrum");
 const specCanvas = $<HTMLCanvasElement>("spec");
 const specLegend = $("spec-legend");
@@ -103,12 +122,21 @@ const viewFromPath = (pathname: string): View => {
 const spectrumView = createSpectrumView(specCanvas, COLORS);
 const manifoldView = createManifoldView(manifoldCanvas);
 
+function moveTabIndicator() {
+  const active = document.querySelector<HTMLButtonElement>("#tabs button.active");
+  if (!active) return;
+  tabsIndicator.style.width = `${active.offsetWidth}px`;
+  tabsIndicator.style.transform = `translateX(${active.offsetLeft}px)`;
+}
+window.addEventListener("resize", moveTabIndicator); // desktop <-> mobile layout changes tab widths
+
 let view: View = viewFromPath(location.pathname);
 function setView(v: View) {
   view = v;
   tabTime.classList.toggle("active", v === "time");
   tabFreq.classList.toggle("active", v === "freq");
   tabManifold.classList.toggle("active", v === "manifold");
+  moveTabIndicator();
   plotsEl.hidden = v !== "time";
   spectrumEl.hidden = v !== "freq";
   manifoldEl.hidden = v !== "manifold";
@@ -252,16 +280,16 @@ function cleanup() {
   if (M && specPtr) { M._free(specPtr); specPtr = 0; }
   cursor = 0;
   sampleQueue.length = 0; // stop feeding; the clock scrolls zeros in on its own
-  connectBtn.textContent = "Connect";
+  setBtn(connectBtn, ICON_BLUETOOTH, "Connect");
   connectBtn.classList.remove("connected");
   connectBtn.disabled = false;
-  playBtn.textContent = "Play ▾";
+  setBtn(playBtn, ICON_PLAY, "Play ▾");
   playBtn.classList.remove("connected");
   playBtn.disabled = false;
   recording = false;
   clearInterval(recTimer);
   if (bannerEl.textContent?.startsWith("●")) bannerEl.style.display = "none";
-  recordBtn.textContent = "Record";
+  setBtn(recordBtn, ICON_CIRCLE, "Record");
   recordBtn.classList.remove("connected");
   recordBtn.disabled = true; // re-enabled only once a live stream is up
 }
@@ -317,7 +345,7 @@ async function connect() {
     await cmdChar.writeValue(ENABLE_SNC); // streams are off by default
 
     setStatus("Streaming", "ok");
-    connectBtn.textContent = "Disconnect";
+    setBtn(connectBtn, ICON_BLUETOOTH_OFF, "Disconnect");
     connectBtn.classList.add("connected");
     connectBtn.disabled = false;
     recordBtn.disabled = false;
@@ -394,7 +422,7 @@ async function play(name: string) {
 
   await setupEngine();
   playing = true;
-  playBtn.textContent = "■ Stop";
+  setBtn(playBtn, ICON_SQUARE, "Stop");
   playBtn.classList.add("connected");
   playBtn.disabled = false;
   setStatus("Playing sample", "ok");
@@ -462,7 +490,7 @@ function startRecording() {
   recOffset = 0;
   recStart = performance.now();
   recording = true;
-  recordBtn.textContent = "Stop";
+  setBtn(recordBtn, ICON_CIRCLE_REC, "Stop");
   recordBtn.classList.add("connected");
   connectBtn.disabled = playBtn.disabled = true;
   recTimer = window.setInterval(() => {
@@ -475,7 +503,7 @@ function stopRecording() {
   recording = false;
   clearInterval(recTimer);
   bannerEl.style.display = "none";
-  recordBtn.textContent = "Record";
+  setBtn(recordBtn, ICON_CIRCLE, "Record");
   recordBtn.classList.remove("connected");
   connectBtn.disabled = playBtn.disabled = false;
   if (recFrames.length) downloadRecording();
