@@ -100,6 +100,9 @@ const viewFromPath = (pathname: string): View => {
   return (VIEWS as string[]).includes(rel) ? (rel as View) : "time";
 };
 
+const spectrumView = createSpectrumView(specCanvas, COLORS);
+const manifoldView = createManifoldView(manifoldCanvas);
+
 let view: View = viewFromPath(location.pathname);
 function setView(v: View) {
   view = v;
@@ -121,9 +124,6 @@ window.addEventListener("popstate", () => setView(viewFromPath(location.pathname
 tabTime.addEventListener("click", () => navigate("time"));
 tabFreq.addEventListener("click", () => navigate("freq"));
 tabManifold.addEventListener("click", () => navigate("manifold"));
-
-const spectrumView = createSpectrumView(specCanvas, COLORS);
-const manifoldView = createManifoldView(manifoldCanvas);
 
 // Mode-toggle icon on the manifold canvas: click switches Plane <-> Cube, pointer on hover — same DOM-tooltip pattern as the spectrum lock icon (see specTip above).
 const modeTip = () => (manifoldView.mode === "cube" ? "Click for Plane view" : "Click for Cube view");
