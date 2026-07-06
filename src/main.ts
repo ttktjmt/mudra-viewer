@@ -36,9 +36,10 @@ const specTip = $("spec-tip");
 const manifoldEl = $("manifold");
 const manifoldCanvas = $<HTMLCanvasElement>("manifold-canvas");
 const manifoldTip = $("manifold-tip");
-const manifoldInfoBtn = $<HTMLButtonElement>("manifold-info");
-const manifoldDialog = $<HTMLDialogElement>("manifold-dialog");
-const manifoldDialogClose = $<HTMLButtonElement>("manifold-dialog-close");
+// ponytail: manifold info dialog disabled, HTML commented out in index.html
+// const manifoldInfoBtn = $<HTMLButtonElement>("manifold-info");
+// const manifoldDialog = $<HTMLDialogElement>("manifold-dialog");
+// const manifoldDialogClose = $<HTMLButtonElement>("manifold-dialog-close");
 
 // Fixtures under public/fixtures/ are detected at build time — drop a new recording folder (with capture.bin + index.json) and it shows up in the dropdown.
 const FIXTURES = Object.keys(import.meta.glob("/public/fixtures/*/index.json"))
@@ -143,8 +144,8 @@ manifoldCanvas.addEventListener("mousemove", (e) => {
 });
 manifoldCanvas.addEventListener("mouseleave", () => (manifoldTip.style.display = "none"));
 
-manifoldInfoBtn.addEventListener("click", () => manifoldDialog.showModal());
-manifoldDialogClose.addEventListener("click", () => manifoldDialog.close());
+// manifoldInfoBtn.addEventListener("click", () => manifoldDialog.showModal());
+// manifoldDialogClose.addEventListener("click", () => manifoldDialog.close());
 
 // Lock icon on the spectrum canvas: click toggles freezing the axis top, pointer on hover — instant DOM tooltip (same style as the status dot), positioned under the lock icon.
 const lockTip = () => (spectrumView.locked ? "Click to auto-scale" : "Click to lock");
