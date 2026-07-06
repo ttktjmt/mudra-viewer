@@ -259,20 +259,24 @@ export function createManifoldView(canvas: HTMLCanvasElement) {
   let rotYaw = 0.5, rotPitch = 0.3; // ponytail: arbitrary starting angle, not derived from data
   let iconBox = { x: 0, y: 0, w: 0, h: 0 }; // mode icon hit region in CSS px (set each draw)
 
+  // Pointer events (not mouse-only) so drag-to-rotate also works via touch.
+  canvas.style.touchAction = "none"; // otherwise touch-drag scrolls the page instead of rotating
   let dragging = false, lastX = 0, lastY = 0;
-  canvas.addEventListener("mousedown", (e) => {
+  canvas.addEventListener("pointerdown", (e) => {
     dragging = true;
     lastX = e.clientX;
     lastY = e.clientY;
+    canvas.setPointerCapture(e.pointerId);
   });
-  window.addEventListener("mousemove", (e) => {
+  canvas.addEventListener("pointermove", (e) => {
     if (!dragging) return;
     rotYaw += (e.clientX - lastX) * 0.01;
     rotPitch = Math.max(-1.4, Math.min(1.4, rotPitch + (e.clientY - lastY) * 0.01));
     lastX = e.clientX;
     lastY = e.clientY;
   });
-  window.addEventListener("mouseup", () => { dragging = false; });
+  canvas.addEventListener("pointerup", () => { dragging = false; });
+  canvas.addEventListener("pointercancel", () => { dragging = false; });
 
   function nComponents() {
     return mode === "cube" ? 3 : 2;
