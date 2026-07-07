@@ -44,7 +44,7 @@
       @media (max-width: 640px) {
         #tabs { position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 20; height: 48px; }
         #tabs button { flex: 1; font-size: 15px; }
-        #plots, #spectrum, #manifold { padding-bottom: 64px; }
+        #plots, #spectrum, #manifold, #spikes { padding-bottom: 64px; }
       }
       #connect:disabled, #play:disabled, #record:disabled { background: #e0ddd0; color: #a5a294; cursor: not-allowed; }
       #connect.connected { background: #b5482f; }
@@ -113,6 +113,29 @@
       }
       #manifold { flex: 1; position: relative; min-height: 0; }
       #manifold[hidden] { display: none; }
+      #spikes { flex: 1; position: relative; min-height: 0; }
+      #spikes[hidden] { display: none; }
+      #spikes-info {
+        position: absolute; bottom: 12px; right: 12px; z-index: 1;
+        width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
+        border: 0; border-radius: 50%; cursor: pointer; background: #efece1; color: #6b6858;
+        font-size: 13px; font-weight: 700; font-style: italic; font-family: Georgia, serif;
+      }
+      #spikes-info:hover { color: #3d3d3a; background: #e0ddd0; }
+      #spikes-dialog {
+        max-width: min(480px, 90vw); padding: 0; border: 0; border-radius: 10px;
+        box-shadow: 0 10px 40px rgba(61, 61, 58, 0.25);
+      }
+      #spikes-dialog::backdrop { background: rgba(61, 61, 58, 0.35); }
+      #spikes-dialog h2 { font-size: 16px; margin: 0; padding: 16px 20px; border-bottom: 1px solid #e8e6dd; }
+      #spikes-dialog .dialog-body { padding: 16px 20px; }
+      #spikes-dialog .dialog-body p { margin: 0 0 12px; color: #3d3d3a; }
+      #spikes-dialog .dialog-body p:last-child { margin-bottom: 0; }
+      #spikes-dialog .dialog-body a { color: #c96442; }
+      #spikes-dialog-close {
+        display: block; margin: 12px 20px 16px auto; padding: 6px 16px; border: 0; border-radius: 6px;
+        cursor: pointer; background: #6b6858; color: #fff; font-size: 13px; font-weight: 600;
+      }
       #manifold-tip {
         position: absolute; z-index: 2; display: none; white-space: nowrap;
         padding: 4px 8px; border-radius: 4px; background: #3d3d3a; color: #fff;
@@ -147,6 +170,7 @@
         <button id="tab-time" class="active">Time</button>
         <button id="tab-freq">Frequency</button>
         <button id="tab-manifold">Manifold</button>
+        <button id="tab-spikes">Spike Trains</button>
       </div>
       <span id="status" data-tip="Not connected"></span>
       <span id="play-wrap">
@@ -181,6 +205,19 @@
         <button id="manifold-dialog-close">Close</button>
       </dialog>
       -->
+    </div>
+    <div id="spikes" hidden>
+      <canvas id="spikes-canvas"></canvas>
+      <button id="spikes-info" aria-label="What is this?">i</button>
+      <dialog id="spikes-dialog">
+        <h2>Spike Trains</h2>
+        <div class="dialog-body">
+          <p>Each row is a <strong>putative motor unit source</strong> separated from the 3-channel sEMG by the same math used for HD-sEMG decomposition (delay extension → whitening → fastICA → peak/K-means → silhouette filtering).</p>
+          <p>True motor-unit decomposition needs a high-density electrode grid (64+ channels). With only 3 channels the spatial resolution is far lower, so these are separated sources — not verified physiological motor units. The grey line is the total firing rate.</p>
+          <p>Details: <a href="https://github.com/ttktjmt/mudra-viewer/blob/main/docs/adr/0003-spike-trains-view-design.md" target="_blank" rel="noopener">docs/adr/0003-spike-trains-view-design.md</a></p>
+        </div>
+        <button id="spikes-dialog-close">Close</button>
+      </dialog>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

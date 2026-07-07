@@ -3,6 +3,7 @@ import wasmUrl from "mudraka/mudraka.wasm?url";
 import { drawTime } from "./views/time";
 import { createSpectrumView, SPEC_WINDOW, SPEC_BINS } from "./views/spectrum";
 import { createManifoldView } from "./views/manifold";
+import { createSpikesView } from "./views/spikes";
 import { zip } from "./zip";
 
 // --- Mudra Link BLE constants (see mudraka docs/MUDRA_LINK_SIGNAL_SPEC.md) ---
@@ -47,6 +48,7 @@ const playMenu = $("play-menu");
 const tabTime = $<HTMLButtonElement>("tab-time");
 const tabFreq = $<HTMLButtonElement>("tab-freq");
 const tabManifold = $<HTMLButtonElement>("tab-manifold");
+const tabSpikes = $<HTMLButtonElement>("tab-spikes");
 const tabsIndicator = $("tabs-indicator");
 const spectrumEl = $("spectrum");
 const specCanvas = $<HTMLCanvasElement>("spec");
@@ -55,6 +57,11 @@ const specTip = $("spec-tip");
 const manifoldEl = $("manifold");
 const manifoldCanvas = $<HTMLCanvasElement>("manifold-canvas");
 const manifoldTip = $("manifold-tip");
+const spikesEl = $("spikes");
+const spikesCanvas = $<HTMLCanvasElement>("spikes-canvas");
+const spikesInfoBtn = $<HTMLButtonElement>("spikes-info");
+const spikesDialog = $<HTMLDialogElement>("spikes-dialog");
+const spikesDialogClose = $<HTMLButtonElement>("spikes-dialog-close");
 // ponytail: manifold info dialog disabled, HTML commented out in index.html
 // const manifoldInfoBtn = $<HTMLButtonElement>("manifold-info");
 // const manifoldDialog = $<HTMLDialogElement>("manifold-dialog");
@@ -98,6 +105,7 @@ const rings = Array.from({ length: CH }, () => new Float32Array(WINDOW));
 let writeIdx = 0; // next write position; total count is unbounded but we only keep WINDOW
 // Decoded samples land here; the free-running display clock (see advanceRing) drains them at RATE — whatever source is active (live BLE / recorded playback) just fills it.
 const sampleQueue: number[][] = [];
+const ZEROS = new Array(CH).fill(0); // fed to the spike processor when the queue is empty (idle scroll)
 const canvases: HTMLCanvasElement[] = [];
 for (let c = 0; c < CH; c++) {
   const lane = document.createElement("div");
@@ -117,8 +125,8 @@ for (let c = 0; c < CH; c++) {
 specLegend.innerHTML = LABELS.map(
   (l, i) => `<span style="color:${COLORS[i]}">${l}</span>`,
 ).join("");
-type View = "time" | "freq" | "manifold";
-const VIEWS: View[] = ["time", "freq", "manifold"];
+type View = "time" | "freq" | "manifold" | "spikes";
+const VIEWS: View[] = ["time", "freq", "manifold", "spikes"];
 const pathForView = (v: View) => import.meta.env.BASE_URL + v;
 const viewFromPath = (pathname: string): View => {
   const rel = pathname.slice(import.meta.env.BASE_URL.length).replace(/\/$/, "");
@@ -127,6 +135,7 @@ const viewFromPath = (pathname: string): View => {
 
 const spectrumView = createSpectrumView(specCanvas, COLORS);
 const manifoldView = createManifoldView(manifoldCanvas);
+const spikesView = createSpikesView(spikesCanvas);
 
 function moveTabIndicator() {
   const active = document.querySelector<HTMLButtonElement>("#tabs button.active");
@@ -142,11 +151,36 @@ function setView(v: View) {
   tabTime.classList.toggle("active", v === "time");
   tabFreq.classList.toggle("active", v === "freq");
   tabManifold.classList.toggle("active", v === "manifold");
+  tabSpikes.classList.toggle("active", v === "spikes");
   moveTabIndicator();
   plotsEl.hidden = v !== "time";
   spectrumEl.hidden = v !== "freq";
   manifoldEl.hidden = v !== "manifold";
+  spikesEl.hidden = v !== "spikes";
   if (v === "manifold") manifoldView.reset(); // fresh point cloud each time the tab opens
+  // fresh live state; learn W on first open. Defer the kickoff to a microtask so a direct landing
+  // on /spikes (setView runs during module init) doesn't touch engine state (M) still in its TDZ.
+  if (v === "spikes") { spikesView.reset(); queueMicrotask(ensureSpikes); }
+}
+
+// Learn the separation matrix W once, lazily, from all fixtures decoded through mudraka. Cached for
+// the session (docs/adr/0003). Kicked off on first Spikes-tab open; the fetch await lets the
+// "learning…" frame paint before the (blocking) fastICA runs.
+let spikesLearning = false;
+let spikesStatus = "";
+async function ensureSpikes() {
+  if (spikesView.ready || spikesLearning) return;
+  spikesLearning = true;
+  spikesStatus = "Learning motor unit sources…";
+  try {
+    const fixtures = await decodeFixtures();
+    spikesView.learnW(fixtures);
+    spikesStatus = spikesView.ready ? "" : "No sources separated — try a different recording";
+  } catch (err) {
+    spikesStatus = `Learn failed: ${(err as Error).message}`;
+  } finally {
+    spikesLearning = false;
+  }
 }
 function navigate(v: View) {
   if (v !== view) history.pushState(null, "", pathForView(v));
@@ -158,6 +192,9 @@ window.addEventListener("popstate", () => setView(viewFromPath(location.pathname
 tabTime.addEventListener("click", () => navigate("time"));
 tabFreq.addEventListener("click", () => navigate("freq"));
 tabManifold.addEventListener("click", () => navigate("manifold"));
+tabSpikes.addEventListener("click", () => navigate("spikes"));
+spikesInfoBtn.addEventListener("click", () => spikesDialog.showModal());
+spikesDialogClose.addEventListener("click", () => spikesDialog.close());
 
 // Mode-toggle icon on the manifold canvas: click switches Plane <-> Cube, pointer on hover — same DOM-tooltip pattern as the spectrum lock icon (see specTip above).
 const modeTip = () => (manifoldView.mode === "cube" ? "Click for Plane view" : "Click for Cube view");
@@ -207,9 +244,13 @@ function advanceRing(now: number) {
   if (!lastAdvance) lastAdvance = now;
   let n = Math.floor(((now - lastAdvance) / 1000) * RATE);
   if (n > WINDOW) n = WINDOW; // don't over-catch-up after a tab pause
+  // Drive spike processing off the same free-running display clock as the waveform, so the raster
+  // scrolls continuously (zeros in when idle) like the Time view — gated to the active tab.
+  const feedSpikes = view === "spikes" && spikesView.ready;
   for (let k = 0; k < n; k++) {
     const s = sampleQueue.shift();
     for (let c = 0; c < CH; c++) rings[c][writeIdx] = s ? s[c] : 0;
+    if (feedSpikes) spikesView.feed(s ?? ZEROS);
     writeIdx = (writeIdx + 1) % WINDOW;
   }
   lastAdvance += (n / RATE) * 1000; // carry the sub-sample remainder
@@ -221,6 +262,7 @@ function draw() {
   advanceRing(performance.now());
   if (view === "freq") spectrumView.draw(M, specPtr, stream, CH, RATE);
   else if (view === "manifold") manifoldView.draw(M, specPtr, stream, CH);
+  else if (view === "spikes") spikesView.draw(spikesStatus);
   else drawTime(canvases, rings, writeIdx, COLORS);
   requestAnimationFrame(draw);
 }
@@ -268,6 +310,44 @@ async function setupEngine() {
   dstPtr = M._malloc(CH * MAX_PULL * 4);
   specPtr = M._malloc(CH * SPEC_BINS * 4);
   cursor = 0;
+}
+
+// Decode every fixture's raw SNC frames to per-channel sample arrays for Spike Trains W-learning.
+// Uses a throwaway Stream per fixture (int32 raw counts via pullInto — same representation the live
+// feed delivers, so learned thresholds transfer). Separate from the live stream; no interference.
+async function decodeFixtures(): Promise<number[][][]> {
+  if (!M) M = await createMudraka({ locateFile: () => wasmUrl });
+  const sncUuid = uuid(CHAR_SNC);
+  const out: number[][][] = [];
+  for (const name of FIXTURES) {
+    const dir = `${import.meta.env.BASE_URL}fixtures/${name}`;
+    const [buf, index] = await Promise.all([
+      fetch(`${dir}/capture.bin`).then((r) => r.arrayBuffer()),
+      fetch(`${dir}/index.json`).then((r) => r.json()),
+    ]);
+    const bin = new Uint8Array(buf);
+    const frames = (index.frames as Frame[]).filter((f) => f.uuid === sncUuid && f.dir === "rx");
+    const cfg = M.makeConfig(CH, RATE, 8); // 8 s ring holds a whole fixture; we pull after every feed
+    const st = new M.Stream(cfg);
+    cfg.delete();
+    const ptr = M._malloc(CH * MAX_PULL * 4);
+    const base = ptr >> 2;
+    const chans: number[][] = Array.from({ length: CH }, () => []);
+    let cur = 0;
+    for (const f of frames) {
+      st.feed(bin.subarray(f.offset, f.offset + f.len), 0);
+      for (;;) {
+        const r = st.pullInto(cur, ptr, MAX_PULL);
+        for (let i = 0; i < r.written; i++) for (let c = 0; c < CH; c++) chans[c].push(M.HEAP32[base + c * MAX_PULL + i]);
+        cur = r.next_cursor;
+        if (r.written < MAX_PULL) break;
+      }
+    }
+    M._free(ptr);
+    st.delete();
+    out.push(chans);
+  }
+  return out;
 }
 
 function onNotification(e: Event) {

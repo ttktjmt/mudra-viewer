@@ -26,9 +26,8 @@ support Web Bluetooth and will not work.
 
 ```sh
 npm install
-npm run dev      # http://localhost is a secure context -> real-device testing works
+npm run dev      # live on http://localhost:5173
 npm run build    # tsc + vite build -> dist/
 ```
 
-Open in Chrome, click **Connect**, pick the device, and the SNC stream starts
-automatically.
+Open in supported browser, click **Connect**, pick the device, and the SNC stream starts automatically.
