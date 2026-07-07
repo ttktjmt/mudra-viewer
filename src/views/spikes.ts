@@ -17,7 +17,7 @@ const MAX_SOURCES = 12; // deflation cap = max display rows (fewer accepted → 
 const REFRACTORY_MS = 20; // min inter-spike interval (physiological MUs ~3–11 pps)
 const RATE_HANN_MS = 400; // firing-rate smoothing kernel full-width
 const DISPLAY_SEC = 3; // scroll window, matches the Time view
-const SIL_MIN = 0.90; // source-quality gate: reject sources whose spike/noise silhouette is below this
+const SIL_MIN = 0.6; // source-quality gate: reject sources whose spike/noise silhouette is below this
 const FASTICA_MAX_ITER = 100;
 const FASTICA_TOL = 1e-4;
 const EIG_KEEP = 1e-4; // whitening: drop eigenvalues below this fraction of the max (rank reduction)
@@ -176,10 +176,17 @@ export function createSpikesView(canvas: HTMLCanvasElement) {
 
     // 5. fastICA with deflation (cubic contrast). ponytail: kurtosis nonlinearity; swap for the
     //    CoV-of-ISI refinement (EMGdecomPy) if putative-source quality is poor.
+    // Activity index = squared norm of each whitened sample; each new source is initialized from the
+    // highest-activity sample (MUedit's `sum(X,1).^2` max, EMGdecomPy's initial_w_matrix), zeroing
+    // the used peak so the next source starts elsewhere — deflation keeps them distinct.
+    const actind = new Float64Array(N);
+    for (let i = 0; i < N; i++) { const z = Z[i]; let a = 0; for (let k = 0; k < Dp; k++) a += z[k] * z[k]; actind[i] = a; }
     const W: Float64Array[] = [];
     for (let s = 0; s < MAX_SOURCES; s++) {
-      let w = new Float64Array(Dp);
-      for (let k = 0; k < Dp; k++) w[k] = Math.random() - 0.5;
+      let idx = 0, best = -1;
+      for (let i = 0; i < N; i++) if (actind[i] > best) { best = actind[i]; idx = i; }
+      actind[idx] = 0; // don't reinitialize the next source from the same peak
+      let w = Float64Array.from(Z[idx]);
       normalize(w);
       for (let it = 0; it < FASTICA_MAX_ITER; it++) {
         const wNew = new Float64Array(Dp);
@@ -194,28 +201,36 @@ export function createSpikesView(canvas: HTMLCanvasElement) {
       W.push(w);
     }
 
-    // 6. per source: square → peaks → K-means(spike/noise) → SIL gate → accept + freeze threshold
-    const accepted: Source[] = [];
+    // 6. per source: square → peaks → K-means(spike/noise) → SIL gate → accept + freeze threshold.
+    //    Also record the first supra-threshold spike time (recruitment proxy) for ordering.
+    const accepted: { src: Source; firstSpike: number }[] = [];
     for (const w of W) {
-      const heights: number[] = [];
+      const idxs: number[] = [], heights: number[] = [];
       let sqm1 = 0, sqm2 = 0;
       for (let i = 0; i < N; i++) {
         const g = dot(w, Z[i]); const sq = g * g;
-        if (i >= 2 && sqm1 > sqm2 && sqm1 >= sq) heights.push(sqm1); // local max at i−1
+        if (i >= 2 && sqm1 > sqm2 && sqm1 >= sq) { idxs.push(i - 1); heights.push(sqm1); } // local max at i−1
         sqm2 = sqm1; sqm1 = sq;
       }
       const km = kmeans2(heights);
       if (!km) continue;
       const sil = silhouette(heights, km.lo, km.hi);
       if (sil < SIL_MIN || km.hi <= km.lo) continue;
+      const thr = (km.lo + km.hi) / 2;
+      let firstSpike = Infinity;
+      for (let p = 0; p < heights.length; p++) if (heights[p] > thr) { firstSpike = idxs[p]; break; }
       const wproj = new Float64Array(D);
       for (let k = 0; k < Dp; k++) { const wk = w[k]; const row = wh[k]; for (let j = 0; j < D; j++) wproj[j] += wk * row[j]; }
-      accepted.push({ wproj, thr: (km.lo + km.hi) / 2 });
+      accepted.push({ src: { wproj, thr }, firstSpike });
     }
 
+    // Order by recruitment = earliest first discharge (openhdemg sort_mus / pyMUEdit sort_MUs).
+    // MU 1 (earliest recruited) ends up at index 0 → pinned to the bottom row in draw().
+    accepted.sort((a, b) => a.firstSpike - b.firstSpike);
+
     mean = m;
-    sources = accepted;
-    ready = accepted.length > 0;
+    sources = accepted.map((a) => a.src);
+    ready = sources.length > 0;
     resetLive();
   }
 

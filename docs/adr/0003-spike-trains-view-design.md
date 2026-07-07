@@ -81,6 +81,22 @@ grilling session); this records the "why" so it isn't lost.
    refractory period. This keeps detection cheap and the cluster boundary
    stable, consistent with decision 3.
 
+6b. **fastICA initialization + MU ordering mirror the established tools.**
+   fastICA has no intrinsic ordering (whitening equalizes variance, so there is
+   no eigenvalue-like ranking). Following MUedit (`sum(X,1).^2` argmax) and
+   EMGdecomPy (`initial_w_matrix`), each source's separation vector is
+   initialized from the highest-activity whitened sample (squared-norm max),
+   with the used peak zeroed so the next source starts elsewhere — deflation
+   keeps them distinct. This is more stable and reproducible than random init.
+   Display order is then set post-hoc by **recruitment order = earliest first
+   discharge time**, exactly as openhdemg's `sort_mus` and pyMUEdit's
+   `sort_MUs` do (`key = first MUpulse`). MU 1 (earliest recruited) is pinned to
+   the bottom row, reproducing the canonical HD-sEMG raster look. SIL is used
+   only for quality/acceptance, never for ordering — matching all the tools.
+   Caveat: our "first discharge" is taken over the concatenated fixtures (not a
+   single force ramp), so it is a recruitment *proxy*, not a calibrated
+   threshold.
+
 7. **Feed samples off the free-running display clock (`advanceRing`), so the
    raster scrolls continuously like the Time view.** Live spike processing runs
    inside `advanceRing` (main.ts), gated by `view === "spikes" && W ready`,
@@ -189,3 +205,99 @@ grilling session); this records the "why" so it isn't lost.
   https://pubmed.ncbi.nlm.nih.gov/24760934/
 - `docs/adr/0002-manifold-view-design.md` for the view-addition precedent and
   the `ml-matrix` / `ml-pca` dependency.
+
+## Addendum (2026-07-08): MU-numbering study + sparse-firing root-cause investigation
+
+After the first implementation, the live raster looked wrong: rows fired far
+too rarely (≈0.04–1.7 pps vs the physiological 3–11 pps), and the row that
+fired most was not MU 1. We investigated by reading the actual source of the
+established tools (cloned locally) and by instrumenting our own pipeline on the
+recorded fixtures. Findings:
+
+### How the established tools number motor units
+
+Every tool separates numbering into two independent phases:
+
+1. **Extraction order (during BSS)** — driven by the initialization, not by any
+   physiological quantity. MUedit (`MUedit_exported.m`: `actind = sum(X,1).^2;
+   [~,idx]=max(actind)`) and EMGdecomPy (`decomposition.py: initial_w_matrix` →
+   `z_peak_heights.argmax()`) both initialize each new separation vector from
+   the **highest-activity whitened sample** (squared-norm max), zero that peak,
+   and repeat; deflation keeps sources distinct. fastICA/CKC have **no intrinsic
+   ordering** (whitening equalizes variance, so there is no PCA-like
+   eigenvalue ranking).
+2. **Display/analysis order (post-hoc)** — the physiological sort. openhdemg
+   `sort_mus` (`tools.py`) and pyMUEdit `sort_MUs` (`FileUploadFunc.py`) both
+   sort by **first discharge time** (`key = first MUpulse`, ascending) =
+   recruitment order. This is what produces the canonical "earliest-recruited at
+   the bottom, densest" raster.
+3. **SIL is used only for quality/acceptance and duplicate removal, never for
+   ordering** — in all of them.
+
+We aligned our code with (1) and (2): activity-index initialization replaced the
+random init, and accepted sources are now sorted by first-discharge time
+(decision 6b). SIL remains an acceptance gate only.
+
+### The tools' refinement step we had omitted
+
+Both tools run a **CoV-ISI refinement loop** after the fixed-point separation
+(Negro et al. 2016, steps 4–6): detect spikes (`findpeaks` with a
+~15–20 ms `MinPeakDistance` → K-means on peak heights → high-centroid cluster),
+then update the filter `w = mean(z at spike times)`, re-detect, and iterate
+**while the ISI coefficient of variation keeps decreasing** (MUedit
+`minimizeCOVISI.m`, EMGdecomPy `refinement`). This converges the filter onto a
+regular-firing unit. Our v1 did a single-shot detection with no refinement and
+no min-distance in threshold learning — real deviations from the tools.
+
+### Root cause of the sparse firing (three experiments)
+
+1. **µV/int32 scaling — ruled out.** Decomposing the same data at amplitude ×1
+   and ×1000 gives byte-identical results. Whitening normalizes every source to
+   unit variance regardless of input amplitude, and the K-means threshold is
+   data-driven, so any global scale cancels. The int32-vs-µV question is
+   irrelevant to detection.
+2. **The squared-source peak distribution is pathologically heavy-tailed** —
+   max/median ≈ 45,000–78,000×. There is a handful of giant transients and
+   otherwise noise; 2-means isolates only the single largest peak, giving
+   ≈0.04 pps. This is not a bug in the clustering — there is simply no distinct
+   spike cluster to find.
+3. **Faithful refinement + stronger recordings do not rescue it.** We added the
+   full CoV-ISI refinement with generous seeding and also re-ran on
+   deliberately stronger contractions (`grasp2 … supination2`, RMS ~1.5–2×
+   higher). The CoV-ISI never converges toward the physiological 0.1–0.3 range:
+   it stays ~1.6–1.9 on the weak set and actually **worsens to ~3.2–4.2 on the
+   strong set** (more activity → more noise-tail crossings, not more regular
+   trains). Pure Poisson would be CoV = 1.0; our values are well above that.
+
+### Conclusion
+
+The binding constraint is the **3-channel spatial resolution**, not signal
+strength, not amplitude calibration, and not the (real but secondary)
+implementation gaps. A 3-channel armband's whitened sources are colored noise
+with occasional transients; they do **not** contain separable, regular
+motor-unit spike trains, so no amount of refinement or stronger contraction
+recovers physiological discharges. This quantitatively confirms the
+sparse-channel literature (≈1.5 ± 0.5 MU/trial; single bipolar resolves ~33.7%
+of low-threshold MUs). Faithful HD-sEMG tools would **reject** all of these
+sources on SIL/CoV grounds.
+
+Implication for this view: what it shows are, at best, activity-driven
+threshold crossings — not motor units. The honest paths forward are (a) keep it
+explicitly experimental / relabel as noise-derived putative sources, (b) make
+detection tool-faithful (refinement + min-distance), which correctly renders it
+near-empty on 3-channel data, or (c) pivot to a **cumulative firing-rate proxy**
+(rectified/smoothed neural-drive envelope), which is the most that 3 channels
+can legitimately support. True MU decomposition requires HD-sEMG (64+ channels).
+
+### Addendum references (tool source read for this study)
+
+- openhdemg `sort_mus` (first-discharge sort) —
+  https://github.com/GiacomoValliPhD/openhdemg `openhdemg/library/tools.py`
+- pyMUEdit `sort_MUs` —
+  https://github.com/modenaxe/pyMUEdit `src/app/muAnalysisFunctions/FileUploadFunc.py`
+- MUedit `fixedpointalg.m`, `getspikes.m`, `minimizeCOVISI.m` —
+  https://github.com/simonavrillon/MUedit
+- EMGdecomPy `initial_w_matrix`, `refinement` —
+  https://github.com/The-Motor-Unit/EMGdecomPy `src/emgdecompy/decomposition.py`
+- Negro et al. 2016, CKC/fastICA refinement (steps 4–6) — the algorithm both
+  tools implement.

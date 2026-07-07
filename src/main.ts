@@ -72,8 +72,9 @@ const FIXTURES = Object.keys(import.meta.glob("/public/fixtures/*/index.json"))
   .map((p) => p.split("/")[3])
   .sort();
 
+// Folder name is shown as-is (e.g. "grasp", "grasp (strong)").
 playMenu.innerHTML = FIXTURES.length
-  ? FIXTURES.map((f) => `<button data-fixture="${f}">${f.replace(/_/g, " ")}</button>`).join("")
+  ? FIXTURES.map((f) => `<button data-fixture="${f}">${f}</button>`).join("")
   : "<button disabled>No samples</button>";
 const statusEl = $("status");
 const bannerEl = $("banner");
@@ -320,7 +321,7 @@ async function decodeFixtures(): Promise<number[][][]> {
   const sncUuid = uuid(CHAR_SNC);
   const out: number[][][] = [];
   for (const name of FIXTURES) {
-    const dir = `${import.meta.env.BASE_URL}fixtures/${name}`;
+    const dir = `${import.meta.env.BASE_URL}fixtures/${encodeURIComponent(name)}`;
     const [buf, index] = await Promise.all([
       fetch(`${dir}/capture.bin`).then((r) => r.arrayBuffer()),
       fetch(`${dir}/index.json`).then((r) => r.json()),
@@ -491,7 +492,7 @@ async function play(name: string) {
   let bin: Uint8Array;
   let frames: Frame[];
   try {
-    const dir = `${import.meta.env.BASE_URL}fixtures/${name}`;
+    const dir = `${import.meta.env.BASE_URL}fixtures/${encodeURIComponent(name)}`;
     const [buf, index] = await Promise.all([
       fetch(`${dir}/capture.bin`).then((r) => r.arrayBuffer()),
       fetch(`${dir}/index.json`).then((r) => r.json()),
