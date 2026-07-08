@@ -289,6 +289,43 @@ near-empty on 3-channel data, or (c) pivot to a **cumulative firing-rate proxy**
 (rectified/smoothed neural-drive envelope), which is the most that 3 channels
 can legitimately support. True MU decomposition requires HD-sEMG (64+ channels).
 
+### Follow-up (2026-07-08): ADC clipping is a second, independent error source
+
+A later observation (flat-topped waveforms in the Time view, worst on the strong
+recordings) prompted a saturation check. Findings:
+
+- **The signal rails at the 16-bit limit (±32768).** Fraction of samples pinned
+  at ≥98% of the rail: strong recordings reach **9–14%** on the worst channel
+  (e.g. `open (strong)` ch1 = 13.8%, ch0/ch2 ≈ 9.3%; `supination (strong)`
+  ch1 = 9.2%). Even some weak recordings clip 7–10% on ch1. This is hard
+  clipping, not headroom margin.
+- **The decomposition latches onto the clip edges, not MUAPs.** For both strong
+  fixtures tested, **50/50 of the top squared-source peaks fall within ±R
+  samples of a clipped sample.** Mechanism: clipping is a hard nonlinearity
+  (flat plateau + sharp edges); the 20–150 Hz band-pass turns each sharp edge
+  into a large ringing transient, which is exactly the heavy-tailed giant peak
+  (max/median ≈ 50,000×) seen earlier, and cubic/kurtosis fastICA converges onto
+  those edges in preference to regular MUAPs.
+- **This explains why stronger recordings were worse, not better.** More force →
+  more frequent saturation → more/larger clip transients → CoV-ISI rose from
+  ~1.6–1.9 (weak) to ~3.2–4.2 (strong). Higher contraction is *counter*productive
+  here because it drives the ADC further into the rail.
+
+So there are two independent corruptions stacked on top of each other:
+1. the 3-channel spatial limit (the deeper binding constraint — even
+   near-unclipped fixtures like `pronation`, ~0.1% rail, still yield degenerate,
+   non-regular detections), and
+2. ADC clipping (the direct cause of the strong-worse-than-weak result; it
+   destroys the MUAP waveform shape that ICA depends on and injects broadband
+   edge artifacts).
+
+Practical implications: record below saturation (lower force / sensor gain — the
+*weaker* recordings are actually better decomposition inputs), and/or exclude
+clipped segments from W-learning (as MUedit's `remoutliers`/segment rejection
+does). Neither overcomes the 3-channel limit; they only remove the clipping
+confound layered on top. The definitive fix for real MU decomposition remains
+HD-sEMG hardware.
+
 ### Addendum references (tool source read for this study)
 
 - openhdemg `sort_mus` (first-discharge sort) —
